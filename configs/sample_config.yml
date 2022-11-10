@@ -1,0 +1,91 @@
+# sample configuration file
+
+# constants: don't change after setup
+TRAIN_DATA_DIR: "data/mini-train" 
+DEV_DATA_DIR: "data/mini-dev" 
+TEST_DATA_DIR: "data/test-clean/mfcc" 
+OUTPUT_DIR: "experiments"
+
+# whether to keep <SOS> and <EOS>
+keep_seq_tags: false
+
+# number of cpu workers
+num_workers: 8
+
+# model architecture
+model_configs:
+  feat_ext:
+    # input MFCC dimension
+    dim_in: 15
+    # output channels
+    dims_out: 
+      - 512
+    # kernel_sizes (first one for downsampling)
+    kernels: 
+      - 5
+      - 5
+    # strides (also, first for downsampling)
+    strides:
+      - 2
+      - 2
+    # whether to use layernorm in convnext block
+    useLayerNorm: false
+  lstm:
+    # don't specify dim_in: taken from feat_ext's dims_out[-1]
+    hidden_dims:
+      - 512
+      - 512
+    num_layers:
+      - 2
+      - 2
+    bidirectionals:
+      - true
+      - true
+    dropouts:
+      - 0.3
+      - 0.3
+  cls:
+    # don't specify dim_in: taken automatically from 
+    #     lstm's hidden_dims[-1] & bidirectionals[-1]
+    dims:
+      - 512
+      - 256
+    # don't specify num_labels either: inferred from keep_seq_tags
+
+# batch sizes
+batch_size: 64
+
+# number of training epochs
+epochs: 20
+comp_dist_int: 4
+
+
+# whether to use wandb for logging
+wandb:
+  use: true
+  configs:
+    project: "hw3p2"
+    reinit: true
+    entity: ""
+
+
+# beam search CTC decoder
+decoder_configs:
+  beam_width: 3
+  # corresponds to [SIL]
+  blank_id: 0
+
+# scheduler
+scheduler_manual:
+  configs:
+    lr_decay: 0.9999
+    min_lr: 1.0e-5
+    warmupEpochs: 5
+  
+# optimizer
+optimizer:
+  name: "adamw"
+  configs:
+    lr: 2.0e-3
+    weight_decay: 0.01
+
