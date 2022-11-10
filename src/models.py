@@ -73,60 +73,48 @@ class FeatureExtraction(nn.Module):
             dims_out: list=[128, 256, 512],
             strides: list=[2, 2, 1, 1], 
             kernels: list=[5, 5, 5, 3],
-            useLayerNorm: bool=True
+            useLayerNorm: bool=True,
+            useConvNext: bool=False
         ):
         super().__init__()
 
-        self.dim_in = dim_in
-        self.dims_out = dims_out
+        self.dims = [dim_in, dims_out[0]] + dims_out
         self.strides = strides
         self.kernels = kernels
         self.paddings = [k // 2 for k in self.kernels]
+        self.useConvNext = useConvNext
         assert (
-            len(self.dims_out) + 1 
+            len(self.dims) - 1 
             == len(self.strides) 
             == len(self.kernels)
         )
-        
-        self.shrinks = nn.ModuleList()
-        # first shrinking conv1d layer
-        # DIM: (batch_size, sequence_length, dim_in)
-        init_shrink = nn.Sequential(
-            nn.Conv1d(
-                in_channels=self.dim_in,
-                out_channels=self.dims_out[0],
-                kernel_size=self.kernels[0],
-                stride=self.strides[0],
-                padding=self.paddings[0]
-            ),
-            nn.BatchNorm1d(self.dims_out[0]),
-            nn.GELU()
-        )
-        # DIM: (batch_size, sequence_length*, dims_out[0])
-        self.shrinks.append(init_shrink)
-
         # ConvNext Blocks & Length Shrinking Blocks
-        self.convs = nn.ModuleList()
-        for i, out in enumerate(self.dims_out):
-            conv = BottleNeck(
-                dim=out,
-                useLayerNorm=useLayerNorm
+        self.shrinks = nn.ModuleList()
+        if self.useConvNext:
+            self.convs = nn.ModuleList()
+        for i, dim in enumerate(self.dims[:-1]):
+            # DIM: (batch_size, sequence_length, dims[0])
+            shrink = nn.Sequential(
+                nn.Conv1d(
+                    in_channels=dim,
+                    out_channels=self.dims[i + 1],
+                    kernel_size=self.kernels[i],
+                    stride=self.strides[i],
+                    padding=self.paddings[i]
+                ),
+                nn.BatchNorm1d(self.dims[i + 1])
             )
-            self.convs.append(conv)
-            if len(self.shrinks) < len(self.dims_out):
-                shrink = nn.Sequential(
-                    nn.Conv1d(
-                        in_channels=out,
-                        out_channels=self.dims_out[i + 1],
-                        stride=self.strides[i + 1],
-                        kernel_size=self.kernels[i + 1]
-                    ),
-                    nn.BatchNorm1d(self.dims_out[i + 1]),
-                    nn.GELU()
+            # DIM: (batch_size, sequence_length*, dims[1])
+            self.shrinks.append(shrink)
+            if self.useConvNext:
+                conv = BottleNeck(
+                    dim=self.dims[i + 1],
+                    useLayerNorm=useLayerNorm
                 )
-                self.shrinks.append(shrink)
+                self.convs.append(conv)
+            # DIM: (batch_size, sequence_length*, dims[1])
         # DIM: (batch_size, sequence_length**, dims_out[-1])
-        
+
         # calculate how much discount applied to the lengths
         self.len_discount = 1
         for s in self.strides:
@@ -137,12 +125,16 @@ class FeatureExtraction(nn.Module):
         xx = x.permute((0, 2, 1))
         # iterative operation
         for i, shrink in enumerate(self.shrinks):
-            conv = self.convs[i]
             xx = shrink(xx)
-            xx = conv(xx)
+            if self.useConvNext:
+                conv = self.convs[i]
+                xx = conv(xx)
         xx = xx.permute((0, 2, 1))
         # compute new lengths
-        lx = torch.clamp(lx // self.len_discount, max=xx.shape[1])
+        lx = torch.clamp(
+            torch.div(lx, self.len_discount, rounding_mode='floor'),
+            max=xx.shape[1]
+        )
         return xx, lx
 
 
@@ -268,14 +260,106 @@ class OneForAll(nn.Module):
     def forward(self, x, lx):
         # feature extraction layers
         xx, lx = self.feat_ext(x, lx)
-
         # (bi)lstm layers
         xx, lx = self.lstm(xx, lx)
-
         # cls layers
         xx = self.cls(xx)
-
         return xx, lx
+
+
+
+class KneesAndToes(nn.Module):
+    """
+        Partial network from BiLSTM to Classification.
+    """
+    def __init__(
+            self,
+            dim_in: int,
+            lstm_cfgs: dict,
+            cls_cfgs: dict
+        ):
+        super().__init__()
+        self.configs = {
+            'dim_in': dim_in,
+            'lstm': lstm_cfgs,
+            'cls': cls_cfgs
+        }
+        # dim_in for lstm is the original MFCC dimensions
+        lstm_dim_in = dim_in
+        self.lstm = AccrualNet(dim_in=lstm_dim_in, **lstm_cfgs)
+        # dim_in for cls is the final hidden dimension of LSTMs
+        cls_dim_in = lstm_cfgs['hidden_dims'][-1]
+        # alter the dimension based on whether bidirectional is enabled
+        cls_dim_in *= 2 if lstm_cfgs['bidirectionals'][-1] else 1
+        self.cls = ClsHead(dim_in=cls_dim_in, **cls_cfgs)
+    
+
+    def forward(self, x, lx):
+        # (bi)lstm layers
+        xx, lx = self.lstm(xx, lx)
+        # cls layers
+        xx = self.cls(xx)
+        return xx, lx
+
+
+
+class ShoulderKneesAndToes(nn.Module):
+    """
+        Entire network with single CNN feature extraction & upcoming BiLSTM + Classification.
+    """
+    def __init__(
+            self, 
+            cnn_cfgs: dict,
+            lstm_cfgs: dict,
+            cls_cfgs: dict
+        ):
+        super().__init__()
+        self.configs = {
+            'cnn': cnn_cfgs,
+            'lstm': lstm_cfgs,
+            'cls': cls_cfgs
+        }
+        self.feat_ext = nn.Sequential(
+            nn.Conv1d(
+                in_channels=cnn_cfgs['dim_in'],
+                out_channels=cnn_cfgs['dim_out'],
+                kernel_size=cnn_cfgs['kernels'][0],
+                padding=cnn_cfgs['kernels'][0] // 2,
+                stride=cnn_cfgs['strides'][0]
+            ),
+            nn.BatchNorm1d(cnn_cfgs.dim_out),
+            nn.Conv1d(
+                in_channels=cnn_cfgs['dim_out'],
+                out_channels=cnn_cfgs['dim_out'],
+                kernel_size=cnn_cfgs['kernels'][1],
+                padding=cnn_cfgs['kernels'][1] // 2,
+                stride=cnn_cfgs['strides'][1]
+            ),
+            nn.ReLU()
+        )
+        self.length_discount = 1
+        for s in cnn_cfgs['strides']:
+            self.length_discount *= s
+        # dim_in for lstm is the final output channel of CNNs
+        lstm_dim_in = cnn_cfgs['dim_out']
+        self.lstm = AccrualNet(dim_in=lstm_dim_in, **lstm_cfgs)
+        # dim_in for cls is the final hidden dimension of LSTMs
+        cls_dim_in = lstm_cfgs['hidden_dims'][-1]
+        # alter the dimension based on whether bidirectional is enabled
+        cls_dim_in *= 2 if lstm_cfgs['bidirectionals'][-1] else 1
+        self.cls = ClsHead(dim_in=cls_dim_in, **cls_cfgs)
+    
+
+    def forward(self, x, lx):
+        # feature extraction layers
+        xx = self.feat_ext(x)
+        # length edition
+        # (bi)lstm layers
+        xx, lx = self.lstm(xx, lx)
+        # cls layers
+        xx = self.cls(xx)
+        return xx, lx
+
 
 
 

@@ -54,7 +54,8 @@ class datasetTrainDev(Dataset):
         ])
 
         # whether to keep <sos> / <eos>
-        l, r = (0, 0) if keepTags else (1, -1)
+        if self.keepTags: 
+            l, r = 1, -1
 
         # load files
         self.mfccs = [
@@ -62,7 +63,7 @@ class datasetTrainDev(Dataset):
             for f in tqdm(mfccFNs, leave=False, desc='loading mfccs...') if f.endswith('.npy')
         ]
         self.transcripts = [
-            torch.tensor([self.labelToIdx[p] for p in np.load(f)[l: r]]) 
+            torch.tensor([self.labelToIdx[p] for p in (np.load(f) if self.keepTags else np.load(f)[l: r])]) 
             for f in tqdm(transFNs, leave=False, desc='loading transcripts...') if f.endswith('.npy')
         ]
 
@@ -155,16 +156,16 @@ def collateTest(
 
 
 def compute_levenshtein(h, y, lh, ly, decoder, LABELS):
-    batchSize = len(beamResults)
     # decode the output (taking the best output from beam search)
     # h <- (batch, seq_len, n_labels)
-    beamResults, _, _, outLens = decoder.decode(h, seq_len=lh)
+    beamResults, _, _, outLens = decoder.decode(h, lh)
     totalDist = 0
-    for b in tqdm(range(batchSize), desc='computing levenshtein...'):
+    batchSize = len(beamResults)
+    for b in range(batchSize):
         predStr = ''.join(LABELS[l] for l in beamResults[b, 0, :outLens[b, 0]])
         trueStr = ''.join(LABELS[l] for l in y[b, :ly[b]])
         totalDist += distance(predStr, trueStr)
-    return totalDist / batchSize
+    return totalDist
 
 
 
@@ -209,7 +210,7 @@ if __name__ == '__main__':
     from data.phonetics import *
     p2i = {p: i for i, p in enumerate(CMUdict)}
 
-    trnDir = './data/mini-train'
+    trnDir = '../autodl-tmp/mini-train'
     trnDataset = datasetTrainDev(
         stdDir=trnDir,
         labelToIdx=p2i,
@@ -224,7 +225,7 @@ if __name__ == '__main__':
         pin_memory=True
     )
 
-    devDir = './data/mini-dev'
+    devDir = '../autodl-tmp/mini-dev'
     devDataset = datasetTrainDev(
         stdDir=devDir,
         labelToIdx=p2i,
@@ -238,7 +239,7 @@ if __name__ == '__main__':
         collate_fn=collateTrainDev
     )
 
-    tstDir = './data/test-clean/mfcc'
+    tstDir = '../autodl-tmp/mini-test/mfcc'
     tstDataset = datasetTest(
         mfccDir=tstDir
     )

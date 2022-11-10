@@ -20,55 +20,64 @@ def unit_train(
         transforms=None, use_wandb: bool=False, device: str='cuda'
     ):
 
-    model.train()
     batch_bar = tqdm(
         total=len(trn_loader), dynamic_ncols=True, leave=False, desc='training...'
     ) 
     # true loss computation
-    trn_loss, trn_cnt = 0, 0 
-    
-    for batch in trn_loader:
+    trn_loss = 0 
+    model.train()
+
+    for b, batch in enumerate(trn_loader):
 
         optimizer.zero_grad()
         # set the lr rate manually if provided the array
-        if lr_list:
+        if lr_list is not None:
             for param_group in optimizer.param_groups:
-                param_group['lr'] = lr_list[batch]
+                param_group['lr'] = lr_list[b]
+        if use_wandb:
+            wandb.log({'learning-rate': optimizer.param_groups[0]['lr']})
 
         x, y, lx, ly = batch
         # augmentations
         if transforms:
             x, lx = transforms(x, lx)
 
-        x = x.to(device)
-        y = y.to(device)
-        cnt = len(x)
+        x, y = x.to(device), y.to(device)
 
-        if scaler and 'cuda' in device:
+        if scaler and device.startswith('cuda'):
             with torch.cuda.amp.autocast():
                 h, lh = model(x, lx)
-                h = h.permute((1, 0, 2))
-                loss = criterion(h, y, lh, ly)
+                loss = criterion(h.permute((1, 0, 2)), y, lh, ly)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            h, lh = model(x, lx)
+            loss = criterion(h.permute((1, 0, 2)), y, lh, ly)
+            # backprop
+            loss.backward()
+            optimizer.step()
         
-        dev_loss += loss.item() * cnt
-        dev_cnt += cnt
-
+        if loss.item() == 0:
+            print(b, x.shape, y.shape, lx.shape, ly.shape)
+            print(y)
+            exit()
+        
+        trn_loss += loss.item() 
+        trn_loss_show = trn_loss / (b + 1)
         batch_bar.set_postfix(
-            trn_loss=f"{trn_loss / trn_cnt:.6f}", lr=optimizer.param_groups[0]['lr']
+            trn_loss=f"{trn_loss_show:.6f}", lr=optimizer.param_groups[0]['lr']
         )
         batch_bar.update()
-
         # add to wandb log
         if use_wandb:
-            wandb.log({'microavg-trn-loss': trn_loss / trn_cnt})
+            wandb.log({'microavg-trn-loss': trn_loss_show})
     
     batch_bar.close()
+    final_trn_loss = trn_loss / len(trn_loader)
     if use_wandb:
-        wandb.log({
-            'epoch-trn-loss-running-avg': trn_loss / trn_cnt,
-            'learning-rate': optimizer.param_groups[0]['lr']
-        })
-    return trn_loss / trn_cnt
+        wandb.log({'epoch-trn-loss-running-avg': final_trn_loss})
+    return final_trn_loss
 
 
 
@@ -82,44 +91,45 @@ def unit_eval(
     """
     model.eval()
     batch_bar = tqdm(
-        total=len(dev_loader), dynamic_ncols=True, leave=False, desc='training...'
+        total=len(dev_loader), dynamic_ncols=True, leave=False, desc='eval...'
     ) 
     # true loss & dist computation
-    dev_loss, dev_dist, dev_cnt = 0, 0, 0
+    dev_loss, dev_dist = 0, 0
 
-    with torch.inference_mode():
-        for batch in dev_loader:
-            x, y, lx, ly = batch
-            x = x.to(device)
-            y = y.to(device)
-            cnt = len(x)
+    for b, batch in enumerate(dev_loader):
+        x, y, lx, ly = batch
+        x, y = x.to(device), y.to(device)
 
-            if scaler and 'cuda' in device:
+        with torch.inference_mode():
+            if scaler and device.startswith('cuda'):
                 with torch.cuda.amp.autocast():
                     h, lh = model(x, lx)
-                    h = h.permute((1, 0, 2))
-                    loss = criterion(h, y, lh, ly)
-            if comp_dist:
-                dist = compute_levenshtein(h, y, lh, ly, decoder, LABELS)
-            
-            dev_dist += dist
-            dev_loss += loss.item() * cnt
-            dev_cnt += cnt
+                    loss = criterion(h.permute((1, 0, 2)), y, lh, ly)
+            else:
+                h, lh = model(x, lx)
+                loss = criterion(h.permute((1, 0, 2)), y, lh, ly)
 
-            dev_loss_show = dev_loss / dev_cnt
-            dev_dist_show = dev_dist / dev_cnt if comp_dist else -1
-            batch_bar.set_postfix(
-                dev_loss=f"{dev_loss_show:.6f}", dev_dist=f"{dev_dist_show:.6f}"
-            )
-            batch_bar.update()
+        if comp_dist:
+            dist = compute_levenshtein(h, y, lh, ly, decoder, LABELS)  
+            dev_dist += dist
+
+        dev_loss += loss.item()
+        dev_loss_show = dev_loss / (b + 1)
+        dev_dist_show = dev_dist / (b + 1) if comp_dist else -1
+        batch_bar.set_postfix(
+            dev_loss=f"{dev_loss_show:.6f}", dev_dist=f"{dev_dist_show:.6f}"
+        )
+        batch_bar.update()
 
     batch_bar.close()
+    final_dev_loss = dev_loss / len(dev_loader)
+    final_dev_dist = dev_loss / len(dev_loader) if comp_dist else -1
     # add to wandb log
     if use_wandb:
-        wandb.log({'epoch-dev-loss': dev_loss_show})
+        wandb.log({'epoch-dev-loss': final_dev_loss})
         if comp_dist:
-            wandb.log({'epoch-dev-dist': dev_dist_show})
-    return dev_loss_show, dev_dist_show
+            wandb.log({'epoch-dev-dist': final_dev_dist})
+    return dev_loss / len(dev_loader), final_dev_dist
 
 
 
@@ -128,6 +138,11 @@ def main(args):
     # load configurations
     allcfgs = cfgClass(yaml.safe_load(open(args.config_file, 'r')))
 
+    # fix random seeds
+    torch.manual_seed(allcfgs.SEED)
+    np.random.seed(allcfgs.SEED)
+
+    # output experiment folder
     tgt_folder = time.strftime("%Y%m%d-%H%M%S")[2:]
     # init wandb proj if set to
     if allcfgs.wandb.use:
@@ -154,7 +169,7 @@ def main(args):
     # whether to skip sequence tags in labels & phonemes
     NUM_LABELS = len(PHONEMES) if allcfgs.keep_seq_tags else len(PHONEMES) - 2
     # add to the configuration dict
-    allcfgs.model_configs['cls_cfgs']['num_labels'] = NUM_LABELS
+    allcfgs.model.configs['cls_cfgs']['num_labels'] = NUM_LABELS
 
     # truncate
     PHONEMES = PHONEMES[: NUM_LABELS]
@@ -188,26 +203,38 @@ def main(args):
         num_workers=allcfgs.num_workers,
         collate_fn=collateTrainDev
     )
+    print(f"\nA total of [{len(trnLoader)}] batches in training set, and [{len(devLoader)}] in dev set.\n")
 
     # model buildup
-    model = OneForAll(**allcfgs.model_configs)
-    print(f"\n\nModel Summary: \n{model}\n\n")
+    model = {
+        'one-for-all': OneForAll,
+        'knees-and-toes': KneesAndToes,
+        'shoulder-knees-and-toes': ShoulderKneesAndToes
+    }[allcfgs.model.choice](**allcfgs.model.configs)
     model.to(device)
+
+    # randomly take a batch for model summary
+    model.eval()
+    x, _, lx, _ = next(iter(trnLoader))
+    with torch.inference_mode():
+        print(f"\n\nModel Summary: \n{summary(model, x.to(device), lx)}\n\n")
 
     # criterion, optimizer and scheduler
     criterion = nn.CTCLoss()
+
     optimizer = {
         'adamw': torch.optim.AdamW,
         'adam': torch.optim.Adam,
         'sgd': torch.optim.SGD
     }[allcfgs.optimizer.name](model.parameters(), **allcfgs.optimizer.configs)
-    # TODO: add official optimizers as well
-
+    
     batches_per_epoch = len(trnLoader)
     lr_list = cosine_linearwarmup_scheduler(
         totalEpochs=allcfgs.epochs, batchesPerEpoch=batches_per_epoch,
         init_lr=allcfgs.optimizer.configs['lr'], **allcfgs.scheduler_manual.configs
     )
+    # TODO: add official schedulers as well
+
     scaler = torch.cuda.amp.GradScaler()
 
     # decoder for beam search
@@ -222,16 +249,16 @@ def main(args):
     # filepaths for best models
     min_loss_ckpt_fp = f"{tgt_folder}/min_loss.pt"
     min_dist_ckpt_fp = f"{tgt_folder}/min_dist.pt"
+    last_ckpt_fp = f"{tgt_folder}/last.pt"
 
     # metrics tracking
     trn_losses = list()
     dev_losses = list()
     dev_dists = list()
-    exit()
 
     # start training
     for epoch in range(allcfgs.epochs):
-
+        print(f"\n\nRunning on Epoch [#{epoch + 1}/{allcfgs.epochs}] now...\n")
         lr_slice = lr_list[epoch * batches_per_epoch: (epoch + 1) * batches_per_epoch]
 
         # train the model
@@ -257,7 +284,8 @@ def main(args):
                 'optimizer_state_dict': optimizer.state_dict(),
                 'lr': lr_list
             }, min_loss_ckpt_fp)
-            wandb.log({'min_loss_new_saving': epoch})
+            if allcfgs.wandb.use:
+                wandb.log({'min_loss_new_saving': epoch})
 
         # local loss tracking
         trn_losses.append(trn_loss)
@@ -274,17 +302,26 @@ def main(args):
                     'optimizer_state_dict': optimizer.state_dict(),
                     'lr': lr_list
                 }, min_dist_ckpt_fp)
-                wandb.log({'min_dist_new_saving': epoch})
+                if allcfgs.wandb.use:
+                    wandb.log({'min_dist_new_saving': epoch})
+
+    # saving the last checkpoint
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'lr': lr_list
+    }, last_ckpt_fp)
 
     # save the local tracking result
     np.save(
         f"{tgt_folder}/log.npy", {
             'epoch_train_losses': trn_losses,
-            'epoch_dev_losses': dev_losses,
-            'epoch_dev_dists': dev_dists,
+            # 'epoch_dev_losses': dev_losses,
+            # 'epoch_dev_dists': dev_dists,
             'lr_list': lr_list,
-            'min_dev_loss': min_dev_loss,
-            'min_dev_dist': min_dev_dist
+            # 'min_dev_loss': min_dev_loss,
+            # 'min_dev_dist': min_dev_dist
         }
     )
 

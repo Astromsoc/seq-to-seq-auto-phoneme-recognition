@@ -1,63 +1,70 @@
 # sample configuration file
 
 # constants: don't change after setup
-TRAIN_DATA_DIR: "../autodl-tmp/mini-train" 
-DEV_DATA_DIR: "../autodl-tmp/mini-dev" 
-TEST_DATA_DIR: "../autodl-tmp/mini-test/mfcc" 
+TRAIN_DATA_DIR: "data/train-clean-100" 
+DEV_DATA_DIR: "data/dev-clean" 
+TEST_DATA_DIR: "data/test-clean/mfcc" 
 OUTPUT_DIR: "experiments"
+SEED: 11785
 
 # whether to keep <SOS> and <EOS>
-keep_seq_tags: false
+keep_seq_tags: True
 
 # number of cpu workers
-num_workers: 8
+num_workers: 10
 
 # model architecture
-model_configs:
-  feat_ext_cfgs:
-    # input MFCC dimension
-    dim_in: 15
-    # output channels
-    dims_out: 
-      - 256
-    # kernel_sizes (first one for downsampling)
-    kernels: 
-      - 5
-      - 5
-    # strides (also, first for downsampling)
-    strides:
-      - 2
-      - 2
-    # whether to use layernorm in convnext block
-    useLayerNorm: false
-  lstm_cfgs:
-    # don't specify dim_in: taken from feat_ext's dims_out[-1]
-    hidden_dims:
-      - 256
-      - 256
-    num_layers:
-      - 2
-      - 2
-    bidirectionals:
-      - true
-      - true
-    dropouts:
-      - 0.2
-      - 0.1
-  cls_cfgs:
-    # don't specify dim_in: taken automatically from 
-    #     lstm's hidden_dims[-1] & bidirectionals[-1]
-    dims:
-      - 256
-      - 256
-    # don't specify num_labels either: inferred from keep_seq_tags
+model: 
+  choice: one-for-all
+  configs:
+    feat_ext_cfgs:
+      # input MFCC dimension
+      dim_in: 15
+      # output channels
+      dims_out: 
+        - 256
+      # kernel_sizes (first one for downsampling)
+      kernels: 
+        - 5
+        - 5
+      # strides (also, first for downsampling)
+      strides:
+        - 2
+        - 2
+      # whether to use layernorm in convnext block
+      useLayerNorm: false
+      # whether to use ConvNext blocks
+      useConvNext: true
+
+    lstm_cfgs:
+      # don't specify dim_in: taken from feat_ext's dims_out[-1]
+      hidden_dims:
+        - 256
+        # - 256
+      num_layers:
+        - 4
+        # - 2
+      bidirectionals:
+        - true
+        # - true
+      dropouts:
+        # - 0.2
+        - 0.1
+
+    cls_cfgs:
+      # don't specify dim_in: taken automatically from 
+      #     lstm's hidden_dims[-1] & bidirectionals[-1]
+      dims:
+        - 256
+        - 256
+      # don't specify num_labels either: inferred from keep_seq_tags
 
 # batch sizes
-batch_size: 64
+batch_size: 256
 
 # number of training epochs
-epochs: 10
-comp_dist_int: 3
+epochs: 20
+comp_dist_int: 4
 
 
 # whether to use wandb for logging
@@ -71,7 +78,7 @@ wandb:
 
 # beam search CTC decoder
 decoder_configs:
-  beam_width: 3
+  beam_width: 5
   # corresponds to [SIL]
   blank_id: 0
 
@@ -80,12 +87,11 @@ scheduler_manual:
   configs:
     lr_decay: 0.9999
     min_lr: 1.0e-5
-    warmupEpochs: 3
+    warmupEpochs: 1
   
 # optimizer
 optimizer:
   name: "adamw"
   configs:
-    lr: 2.0e-3
-    weight_decay: 0.01
+    lr: 0.005
 
