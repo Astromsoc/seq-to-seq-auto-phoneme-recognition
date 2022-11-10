@@ -290,7 +290,7 @@ if __name__ == '__main__':
     DIMS_OUT = [16, 32, 32]
     KERNELS = [5, 5, 5, 3]
     STRIDES = [2, 2, 1, 1]
-    LSTM_DIMOUT = 64
+    HIDDEN_DIMS = [32, 64]
     NUM_LAYERS = [2, 2]
     BIDIRECTIONALS = [True, True]
     DROPOUTS = [0.3, 0.3]

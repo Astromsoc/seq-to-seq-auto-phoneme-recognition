@@ -202,6 +202,7 @@ if __name__ == '__main__':
     plt.plot(lr_list)
     plt.xlabel('Batches')
     plt.ylabel('learning rate')
+    plt.savefig('./imgs/sample_cosine_linearwarmup.png', dpi=128)
     plt.show()
     # you can use the plot to explore what decay rate to set for lr
 

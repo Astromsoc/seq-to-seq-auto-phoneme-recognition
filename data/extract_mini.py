@@ -19,15 +19,17 @@ def main(args):
     srcMFCCs = sorted([
         f'mfcc/{f}' for f in os.listdir(f'{srcRoot}/mfcc')
     ])
-    srcTranscripts = sorted([
-        f'transcript/raw/{f}' for f in os.listdir(f'{srcRoot}/transcript/raw')
-    ])
-    assert len(srcMFCCs) == len(srcTranscripts)
+    if not args.feat_only:
+        srcTranscripts = sorted([
+            f'transcript/raw/{f}' for f in os.listdir(f'{srcRoot}/transcript/raw')
+        ])
+        assert len(srcMFCCs) == len(srcTranscripts)
 
     # target folder
     tgtRoot = args.tgt_folder
     if not os.path.exists(tgtRoot):
-        os.makedirs(f'{tgtRoot}/transcript/raw')
+        if not args.feat_only:
+            os.makedirs(f'{tgtRoot}/transcript/raw')
         os.makedirs(f'{tgtRoot}/mfcc')
     
     # random filenames
@@ -36,12 +38,14 @@ def main(args):
     
     for i in chosen:
         m = srcMFCCs[i]
-        t = srcTranscripts[i]
-        # basenames should be the same
-        assert os.path.basename(m) == os.path.basename(t)
+        if not args.feat_only:
+            t = srcTranscripts[i]
+            # basenames should be the same
+            assert os.path.basename(m) == os.path.basename(t)
         # copy
         shutil.copyfile(f'{srcRoot}/{m}', f'{tgtRoot}/{m}')
-        shutil.copyfile(f'{srcRoot}/{t}', f'{tgtRoot}/{t}')
+        if not args.feat_only:
+            shutil.copyfile(f'{srcRoot}/{t}', f'{tgtRoot}/{t}')
 
 
 
@@ -76,6 +80,12 @@ if __name__ == '__main__':
         default=3000,
         type=int,
         help='Number of mfcc-transcript pairs to be kept.'
+    )
+    parser.add_argument(
+        '--feat-only',
+        action='store_true',
+        default=False,
+        help='Whether only the mfcc files are sampled and copied (test set).'
     )
 
     args = parser.parse_args()

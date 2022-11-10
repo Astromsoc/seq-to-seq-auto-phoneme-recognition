@@ -135,6 +135,8 @@ def main(args):
         tgt_folder = wandb.run.name
     # setup output filepath
     tgt_folder = f"{allcfgs.OUTPUT_DIR}/{tgt_folder}"
+    if not os.path.exists(tgt_folder):
+        os.makedirs(tgt_folder)
     # copy the configuration file there
     shutil.copy(args.config_file, f"{tgt_folder}/config.yml")
 
@@ -152,7 +154,7 @@ def main(args):
     # whether to skip sequence tags in labels & phonemes
     NUM_LABELS = len(PHONEMES) if allcfgs.keep_seq_tags else len(PHONEMES) - 2
     # add to the configuration dict
-    allcfgs.model_configs.cls['num_labels'] = NUM_LABELS
+    allcfgs.model_configs['cls_cfgs']['num_labels'] = NUM_LABELS
 
     # truncate
     PHONEMES = PHONEMES[: NUM_LABELS]
@@ -165,16 +167,16 @@ def main(args):
     trnDataset = datasetTrainDev(
         stdDir=allcfgs.TRAIN_DATA_DIR,
         labelToIdx=PNM2IDX,
-        keepTags=allcfgs.keepSeqTags
+        keepTags=allcfgs.keep_seq_tags
     )
     devDataset = datasetTrainDev(
         stdDir=allcfgs.DEV_DATA_DIR,
         labelToIdx=PNM2IDX,
-        keepTags=allcfgs.keepSeqTags
+        keepTags=allcfgs.keep_seq_tags
     )
     trnLoader = DataLoader(
         trnDataset,
-        batch_size=allcfgs.batchSize,
+        batch_size=allcfgs.batch_size,
         num_workers=allcfgs.num_workers,
         collate_fn=collateTrainDev,
         shuffle=True,
@@ -182,13 +184,15 @@ def main(args):
     )
     devLoader = DataLoader(
         devDataset,
-        batch_size=allcfgs.batchSize,
+        batch_size=allcfgs.batch_size,
         num_workers=allcfgs.num_workers,
         collate_fn=collateTrainDev
     )
 
     # model buildup
     model = OneForAll(**allcfgs.model_configs)
+    print(f"\n\nModel Summary: \n{model}\n\n")
+    model.to(device)
 
     # criterion, optimizer and scheduler
     criterion = nn.CTCLoss()
@@ -196,13 +200,13 @@ def main(args):
         'adamw': torch.optim.AdamW,
         'adam': torch.optim.Adam,
         'sgd': torch.optim.SGD
-    }[allcfgs.optimizer.name](model.parameters(), allcfgs.optimizer.cfgs)
+    }[allcfgs.optimizer.name](model.parameters(), **allcfgs.optimizer.configs)
     # TODO: add official optimizers as well
 
     batches_per_epoch = len(trnLoader)
     lr_list = cosine_linearwarmup_scheduler(
         totalEpochs=allcfgs.epochs, batchesPerEpoch=batches_per_epoch,
-        init_lr=allcfgs.optimizer.cfgs.lr, **allcfgs.scheduler_manual
+        init_lr=allcfgs.optimizer.configs['lr'], **allcfgs.scheduler_manual.configs
     )
     scaler = torch.cuda.amp.GradScaler()
 
@@ -223,6 +227,7 @@ def main(args):
     trn_losses = list()
     dev_losses = list()
     dev_dists = list()
+    exit()
 
     # start training
     for epoch in range(allcfgs.epochs):
