@@ -54,7 +54,7 @@ class datasetTrainDev(Dataset):
         ])
 
         # whether to keep <sos> / <eos>
-        if self.keepTags: 
+        if not self.keepTags: 
             l, r = 1, -1
 
         # load files
@@ -165,7 +165,18 @@ def compute_levenshtein(h, y, lh, ly, decoder, LABELS):
         predStr = ''.join(LABELS[l] for l in beamResults[b, 0, :outLens[b, 0]])
         trueStr = ''.join(LABELS[l] for l in y[b, :ly[b]])
         totalDist += distance(predStr, trueStr)
-    return totalDist
+    return totalDist / batchSize
+
+
+
+def generate_batch_predictions(h, lh, decoder, LABELS):
+    # decode the output (taking the best output from beam search)
+    # h <- (batch, seq_len, n_labels)
+    beamResults, _, _, outLens = decoder.decode(h, lh)
+    return [
+        ''.join(LABELS[l] for l in beamResults[b, 0, :outLens[b, 0]])
+        for b in range(len(beamResults))
+    ]
 
 
 
@@ -189,6 +200,18 @@ def cosine_linearwarmup_scheduler(
         ) for b in range(cosineBatches)
     ])
     return lr_list
+
+
+
+def plot_lr_schedule(
+        lr_list: np.ndarray, tgt_folder: str
+    ):
+    import matplotlib.pyplot as plt
+    plt.title("Learning Rate Schedule")
+    plt.plot(lr_list)
+    plt.xlabel('Batches')
+    plt.ylabel('learning rate')
+    plt.savefig(f'{tgt_folder}/lr_schedule.png', dpi=128)
             
 
 
@@ -199,12 +222,7 @@ if __name__ == '__main__':
 
     import matplotlib.pyplot as plt
     lr_list = cosine_linearwarmup_scheduler()
-    plt.title("Sample Graph for Learning Rate Schedule")
-    plt.plot(lr_list)
-    plt.xlabel('Batches')
-    plt.ylabel('learning rate')
-    plt.savefig('./imgs/sample_cosine_linearwarmup.png', dpi=128)
-    plt.show()
+    plot_lr_schedule(lr_list, './imgs')
     # you can use the plot to explore what decay rate to set for lr
 
     from data.phonetics import *

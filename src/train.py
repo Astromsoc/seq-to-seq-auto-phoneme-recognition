@@ -91,7 +91,7 @@ def unit_eval(
     """
     model.eval()
     batch_bar = tqdm(
-        total=len(dev_loader), dynamic_ncols=True, leave=False, desc='eval...'
+        total=len(dev_loader), dynamic_ncols=True, leave=False, desc='evaluating...'
     ) 
     # true loss & dist computation
     dev_loss, dev_dist = 0, 0
@@ -123,14 +123,13 @@ def unit_eval(
 
     batch_bar.close()
     final_dev_loss = dev_loss / len(dev_loader)
-    final_dev_dist = dev_loss / len(dev_loader) if comp_dist else -1
+    final_dev_dist = dev_dist / len(dev_loader) if comp_dist else -1
     # add to wandb log
     if use_wandb:
         wandb.log({'epoch-dev-loss': final_dev_loss})
         if comp_dist:
             wandb.log({'epoch-dev-dist': final_dev_dist})
-    return dev_loss / len(dev_loader), final_dev_dist
-
+    return final_dev_loss, final_dev_dist
 
 
 
@@ -233,6 +232,8 @@ def main(args):
         totalEpochs=allcfgs.epochs, batchesPerEpoch=batches_per_epoch,
         init_lr=allcfgs.optimizer.configs['lr'], **allcfgs.scheduler_manual.configs
     )
+    # save plot of lr scheduler in target folder
+    plot_lr_schedule(lr_list, tgt_folder)
     # TODO: add official schedulers as well
 
     scaler = torch.cuda.amp.GradScaler()
@@ -317,11 +318,11 @@ def main(args):
     np.save(
         f"{tgt_folder}/log.npy", {
             'epoch_train_losses': trn_losses,
-            # 'epoch_dev_losses': dev_losses,
-            # 'epoch_dev_dists': dev_dists,
+            'epoch_dev_losses': dev_losses,
+            'epoch_dev_dists': dev_dists,
             'lr_list': lr_list,
-            # 'min_dev_loss': min_dev_loss,
-            # 'min_dev_dist': min_dev_dist
+            'min_dev_loss': min_dev_loss,
+            'min_dev_dist': min_dev_dist
         }
     )
 
