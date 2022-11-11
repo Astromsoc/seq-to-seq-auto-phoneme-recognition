@@ -1,4 +1,5 @@
 CMUdict_ARPAbet = {
+    "" : " ", # BLANK TOKEN
     "[SIL]": "-", "NG": "G", "F" : "f", "M" : "m", "AE": "@", 
     "R"    : "r", "UW": "u", "N" : "n", "IY": "i", "AW": "W", 
     "V"    : "v", "UH": "U", "OW": "o", "AA": "a", "ER": "R", 
@@ -7,41 +8,8 @@ CMUdict_ARPAbet = {
     "AH"   : "A", "B" : "b", "P" : "p", "TH": "T", "DH": "D", 
     "AO"   : "c", "G" : "g", "L" : "l", "JH": "j", "OY": "O", 
     "SH"   : "S", "D" : "d", "AY": "Y", "S" : "s", "IH": "I",
-    "[PAD]": "[PAD]" , "[SOS]": "[SOS]", "[EOS]": "[EOS]"}
+    "[SOS]": "[SOS]", "[EOS]": "[EOS]"
+}
 
 CMUdict = list(CMUdict_ARPAbet.keys())
 ARPAbet = list(CMUdict_ARPAbet.values())
-
-Alphabet = [ 
-    '[SIL]',
-    'a',
-    'b',
-    'c',
-    'd',
-    'e',
-    'f',
-    'g',
-    'h',
-    'i',
-    'j',
-    'k',
-    'l',
-    'm',
-    'n',
-    'o',
-    'p',
-    'q',
-    'r',
-    's',
-    't',
-    'u',
-    'v',
-    'w',
-    'x',
-    'y',
-    'z',
-    ' ',
-    "'",
-    '[PAD]',
-    '[SOS]',
-    '[EOS]']

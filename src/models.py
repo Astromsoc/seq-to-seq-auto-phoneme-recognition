@@ -5,6 +5,7 @@
 import torch
 import torch.nn as nn
 from torchsummaryX import summary
+from torchaudio import transforms as tat
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 
@@ -43,7 +44,6 @@ class BottleNeck(nn.Module):
             out_channels=self.dim,
             kernel_size=1
         )
-    
 
     def forward(self, x):
         # keep copy
@@ -73,11 +73,10 @@ class FeatureExtraction(nn.Module):
             dims_out: list=[128, 256, 512],
             strides: list=[2, 2, 1, 1], 
             kernels: list=[5, 5, 5, 3],
-            useLayerNorm: bool=True,
+            useLayerNorm: bool=False,
             useConvNext: bool=False
         ):
         super().__init__()
-
         self.dims = [dim_in, dims_out[0]] + dims_out
         self.strides = strides
         self.kernels = kernels
@@ -102,7 +101,8 @@ class FeatureExtraction(nn.Module):
                     stride=self.strides[i],
                     padding=self.paddings[i]
                 ),
-                nn.BatchNorm1d(self.dims[i + 1])
+                nn.BatchNorm1d(self.dims[i + 1]),
+                nn.GELU()
             )
             # DIM: (batch_size, sequence_length*, dims[1])
             self.shrinks.append(shrink)
@@ -139,6 +139,108 @@ class FeatureExtraction(nn.Module):
 
 
 
+class LockedDropout(nn.Module):
+    """
+        Code lent and slightly adapted from the torchnlp library.
+            ref url: https://pytorchnlp.readthedocs.io/en/latest/_modules/torchnlp/nn/lock_dropout.html
+    """
+    def __init__(self, prob=float):
+        super().__init__()
+        self.prob = prob
+        assert 0 <= self.prob <= 1
+
+
+    def forward(self, x):
+        # assume the dimension of x is:
+        #       (batch_size, seq_len, hidden_dim)
+        if (not self.training) or self.prob == 0:
+            return x
+        x = x.clone()
+        # build mask (applied to every time step)
+        mask = x.new_empty(
+            x.size(0), 1, x.size(2), requires_grad=False
+        ).bernoulli_(1 - self.prob)
+        mask = mask.div_(1 - self.prob)
+        # expand mask along time steps
+        mask = mask.expand_as(x)
+        return x * mask
+
+
+
+class LockedLSTM(nn.Module):
+    """
+        One single LSTM layer w/ locked dropout
+    """
+    def __init__(self, lstm_cfgs: dict, dropout_prob: float=0.2):
+        super().__init__()
+        # bookkeeping
+        self.lstm_cfgs = lstm_cfgs
+        self.dropout_prob = dropout_prob
+        # submodules
+        self.vanilla = nn.LSTM(num_layers=1, **self.lstm_cfgs)
+        self.dropout = (
+            LockedDropout(self.dropout_prob) if self.dropout_prob else None
+        )
+        self.activation = nn.GELU()
+
+
+    def forward(self, x, lx):
+        # pack 
+        xx = pack_padded_sequence(
+            x, lengths=lx, batch_first=True, enforce_sorted=False
+        )
+        # lstm forward
+        xx, _ = self.vanilla(xx)
+        # pad
+        xx, lx = pad_packed_sequence(
+            xx, batch_first=True
+        )
+        # apply activation
+        xx = self.activation(xx)
+        # apply dropout
+        if self.dropout is not None:
+            xx = self.dropout(xx)
+        return xx, lx
+
+
+
+class LockedStackedLSTM(nn.Module):
+    """
+        Combining layers of locked LSTMs of 1 group (multiple layers for same inputs)
+            to be compatible w/ AccrualNet inputs for smoother transition
+    """
+    def __init__(
+            self, input_dim: int=512, hidden_dim: int=512, 
+            bidirectional: bool=True, dropout:float=0.2, num_layers=3
+        ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.bidirectional = bidirectional
+        self.dropout = dropout
+        self.num_layers = num_layers
+        
+        # stack all lstms
+        self.lstms = nn.ModuleList([
+            LockedLSTM(lstm_cfgs={
+                'input_size': (self.input_dim if i == 0 else 
+                               self.hidden_dim * (1 + int(self.bidirectional))),
+                'hidden_size': hidden_dim,
+                'bidirectional': bidirectional,
+                'batch_first': True
+            }, dropout_prob=self.dropout) 
+            for i in range(num_layers)
+        ])
+
+
+    def forward(self, x, lx):
+        xx = x
+        for lstm in self.lstms:
+            xx, lx = lstm(xx, lx)
+        return xx, lx
+
+
+
 class AccrualNet(nn.Module):
     """
         (Bidirectional) LSTM Module
@@ -149,13 +251,18 @@ class AccrualNet(nn.Module):
             hidden_dims: list=[256, 256],
             num_layers: list=[4, 4],
             bidirectionals: list=[True, True],
-            dropouts: list=[0.3, 0.3]
+            dropouts: list=[0.3, 0.3],
+            useLockDropout: bool=True
         ):
+        """
+            Note: locked dropout only applied once to concat layers at the end
+                    to apply one locked dropout per lstm, use LockedGroupedLSTM instead
+        """
         super().__init__()
-
         self.dims = [dim_in] + hidden_dims
         self.num_layers = num_layers
         self.bidirectionals = bidirectionals
+        self.useLockDropout = useLockDropout
         assert (
             len(self.dims) 
             == len(self.num_layers) + 1 
@@ -174,10 +281,13 @@ class AccrualNet(nn.Module):
                 hidden_size=self.dims[l + 1],
                 num_layers=self.num_layers[l],
                 bidirectional=bidirectional,
-                dropout=dropouts[l],
+                dropout=0 if self.useLockDropout else dropouts[l],
                 batch_first=True
             )
             self.streamline.append(lstm)
+
+        # locked dropout
+        self.dropout = LockedDropout(dropouts[l]) if useLockDropout else None
     
 
     def forward(self, x, lx):
@@ -189,6 +299,8 @@ class AccrualNet(nn.Module):
         xx, lx = pad_packed_sequence(
             xx, batch_first=True
         )
+        if self.dropout is not None:
+            xx = self.dropout(xx)
         return xx, lx
 
 
@@ -201,7 +313,8 @@ class ClsHead(nn.Module):
             self, 
             dim_in: int=256,
             dims: list=[512],
-            num_labels: int=41
+            num_labels: int=41,
+            dropout: float=0.2
         ):
         super().__init__()
         # bookkeeping
@@ -216,8 +329,9 @@ class ClsHead(nn.Module):
                 )
             )
             if i < len(self.dims) - 2:
+                self.linears.append(nn.Dropout(dropout))
                 self.linears.append(nn.GELU())
-        assert len(self.linears) == 2 * len(self.dims) - 3
+        assert len(self.linears) == 3 * len(self.dims) - 5
         # logsoftmax
         self.logsoftmax = nn.LogSoftmax(dim=-1)
 
@@ -230,15 +344,120 @@ class ClsHead(nn.Module):
 
 
 
+class AxisMaskingTransforms(nn.Module):
+    """
+        Applies masking to either time or frequency.
+    """
+    def __init__(
+            self, 
+            emb_time_mask: bool=True,
+            emb_freq_mask: bool=True,
+            freq_range: int=-1
+        ):
+        super().__init__()
+        self.emb_freq_mask = emb_freq_mask
+        self.emb_time_mask = emb_time_mask
+        self.transforms = nn.Sequential(*[t for t in [
+            # frequency masking
+            tat.FrequencyMasking(
+                freq_mask_param=freq_range
+            ) if emb_freq_mask and freq_range != -1 else None,
+            # time masking
+            tat.TimeMasking(
+                time_mask_param=10, p=0.8
+            ) if emb_time_mask else None
+        ] if t is not None])
+    
+    
+    def forward(self, x):
+        if self.training and self.transforms:
+            x = x.permute((0, 2, 1))
+            x = self.transforms(x)
+            x = x.permute((0, 2, 1))
+        return x
+
+
+
 class OneForAll(nn.Module):
     """
         Entire network from feature extraction to final classification.
+            w/ locked dropouts enabled for LSTM layers
     """
     def __init__(
             self, 
             feat_ext_cfgs: dict,
             lstm_cfgs: dict,
-            cls_cfgs: dict
+            cls_cfgs: dict,
+            emb_time_mask: bool=True,
+            emb_freq_mask: bool=True
+        ):
+        super().__init__()
+        # bookkeeping
+        self.configs = {
+            'feat_ext': feat_ext_cfgs,
+            'lstm': lstm_cfgs,
+            'cls': cls_cfgs
+        }
+        self.emb_freq_mask = emb_freq_mask
+        self.emb_time_mask = emb_time_mask
+
+        # feature extraction module
+        self.feat_ext = FeatureExtraction(**feat_ext_cfgs)
+
+        # lstm module
+        lstm_cfgs['dims'] = [feat_ext_cfgs['dims_out'][-1]] + lstm_cfgs['hidden_dims']
+        # interpolate w/ GELU activations
+        self.lstm_stack = nn.ModuleList([LockedStackedLSTM(
+            # input dim is doubled if grafted on prev bidirectional LSTM hidden dims
+            input_dim=hidden_dim * (
+                1 + (int(lstm_cfgs['bidirectionals'][i - 1]) if i > 0 else 0)
+            ),
+            hidden_dim=lstm_cfgs['dims'][i + 1], 
+            bidirectional=lstm_cfgs['bidirectionals'][i], 
+            dropout=lstm_cfgs['dropouts'][i], 
+            num_layers=lstm_cfgs['num_layers'][i]
+        ) for i, hidden_dim in enumerate(lstm_cfgs['dims'][:-1])])
+
+        # classification head
+        # dim_in for cls is the final hidden dimension of LSTMs
+        cls_dim_in = lstm_cfgs['hidden_dims'][-1]
+        # alter the dimension based on whether bidirectional is enabled
+        cls_dim_in *= 2 if lstm_cfgs['bidirectionals'][-1] else 1
+        self.cls = ClsHead(dim_in=cls_dim_in, **cls_cfgs)
+
+        self.transforms = AxisMaskingTransforms(
+            emb_freq_mask=self.emb_freq_mask,
+            emb_time_mask=self.emb_time_mask,
+            freq_range=int(feat_ext_cfgs['dims_out'][-1] * 0.1)
+        )
+
+
+    def forward(self, x, lx):
+        # feature extraction layers
+        xx, lx = self.feat_ext(x, lx)
+        # apply transforms here 
+        xx = self.transforms(xx)
+        # (bi)lstm layers
+        for lstm in self.lstm_stack:
+            xx, lx = lstm(xx, lx)
+        # cls layers
+        xx = self.cls(xx)
+        return xx, lx
+
+
+
+class OneForAllUnlocked(nn.Module):
+    """
+        Entire network from feature extraction to final classification.
+            w/ LSTM layers of unlocked dropouts
+    """
+    def __init__(
+            self, 
+            feat_ext_cfgs: dict,
+            lstm_cfgs: dict,
+            cls_cfgs: dict,
+            emb_time_mask: bool=True,
+            emb_freq_mask: bool=True
         ):
         super().__init__()
         self.configs = {
@@ -255,11 +474,23 @@ class OneForAll(nn.Module):
         # alter the dimension based on whether bidirectional is enabled
         cls_dim_in *= 2 if lstm_cfgs['bidirectionals'][-1] else 1
         self.cls = ClsHead(dim_in=cls_dim_in, **cls_cfgs)
+
+        self.transforms = nn.Sequential(
+            *[t for t in [
+                tat.FrequencyMasking(
+                    freq_mask_param=int(feat_ext_cfgs['dims_out'][-1] * 0.1)
+                ) if emb_freq_mask else None,
+                tat.TimeMasking(time_mask_param=10, p=0.8) if emb_time_mask else None
+                ] if t is not None]
+        )
     
 
     def forward(self, x, lx):
         # feature extraction layers
         xx, lx = self.feat_ext(x, lx)
+        # apply transforms here 
+        if self.training and self.transforms:
+            xx = self.transforms(xx)
         # (bi)lstm layers
         xx, lx = self.lstm(xx, lx)
         # cls layers
@@ -300,66 +531,6 @@ class KneesAndToes(nn.Module):
         # cls layers
         xx = self.cls(xx)
         return xx, lx
-
-
-
-class ShoulderKneesAndToes(nn.Module):
-    """
-        Entire network with single CNN feature extraction & upcoming BiLSTM + Classification.
-    """
-    def __init__(
-            self, 
-            cnn_cfgs: dict,
-            lstm_cfgs: dict,
-            cls_cfgs: dict
-        ):
-        super().__init__()
-        self.configs = {
-            'cnn': cnn_cfgs,
-            'lstm': lstm_cfgs,
-            'cls': cls_cfgs
-        }
-        self.feat_ext = nn.Sequential(
-            nn.Conv1d(
-                in_channels=cnn_cfgs['dim_in'],
-                out_channels=cnn_cfgs['dim_out'],
-                kernel_size=cnn_cfgs['kernels'][0],
-                padding=cnn_cfgs['kernels'][0] // 2,
-                stride=cnn_cfgs['strides'][0]
-            ),
-            nn.BatchNorm1d(cnn_cfgs.dim_out),
-            nn.Conv1d(
-                in_channels=cnn_cfgs['dim_out'],
-                out_channels=cnn_cfgs['dim_out'],
-                kernel_size=cnn_cfgs['kernels'][1],
-                padding=cnn_cfgs['kernels'][1] // 2,
-                stride=cnn_cfgs['strides'][1]
-            ),
-            nn.ReLU()
-        )
-        self.length_discount = 1
-        for s in cnn_cfgs['strides']:
-            self.length_discount *= s
-        # dim_in for lstm is the final output channel of CNNs
-        lstm_dim_in = cnn_cfgs['dim_out']
-        self.lstm = AccrualNet(dim_in=lstm_dim_in, **lstm_cfgs)
-        # dim_in for cls is the final hidden dimension of LSTMs
-        cls_dim_in = lstm_cfgs['hidden_dims'][-1]
-        # alter the dimension based on whether bidirectional is enabled
-        cls_dim_in *= 2 if lstm_cfgs['bidirectionals'][-1] else 1
-        self.cls = ClsHead(dim_in=cls_dim_in, **cls_cfgs)
-    
-
-    def forward(self, x, lx):
-        # feature extraction layers
-        xx = self.feat_ext(x)
-        # length edition
-        # (bi)lstm layers
-        xx, lx = self.lstm(xx, lx)
-        # cls layers
-        xx = self.cls(xx)
-        return xx, lx
-
 
 
 
@@ -448,7 +619,8 @@ if __name__ == '__main__':
         'dims_out': DIMS_OUT,
         'strides': STRIDES,
         'kernels': KERNELS,
-        'useLayerNorm': False
+        'useLayerNorm': False,
+        'useConvNext': False
     }
 
     LSTM_CFGS = {

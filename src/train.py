@@ -58,11 +58,6 @@ def unit_train(
             loss.backward()
             optimizer.step()
         
-        if loss.item() == 0:
-            print(b, x.shape, y.shape, lx.shape, ly.shape)
-            print(y)
-            exit()
-        
         trn_loss += loss.item() 
         trn_loss_show = trn_loss / (b + 1)
         batch_bar.set_postfix(
@@ -72,6 +67,9 @@ def unit_train(
         # add to wandb log
         if use_wandb:
             wandb.log({'microavg-trn-loss': trn_loss_show})
+        
+        if b == 10:
+            break
     
     batch_bar.close()
     final_trn_loss = trn_loss / len(trn_loader)
@@ -99,6 +97,8 @@ def unit_eval(
     for b, batch in enumerate(dev_loader):
         x, y, lx, ly = batch
         x, y = x.to(device), y.to(device)
+        print(x.shape, lx.shape)
+        print(y.shape, ly.shape)
 
         with torch.inference_mode():
             if scaler and device.startswith('cuda'):
@@ -110,6 +110,7 @@ def unit_eval(
                 loss = criterion(h.permute((1, 0, 2)), y, lh, ly)
 
         if comp_dist:
+            print(h.shape, lh.shape)
             dist = compute_levenshtein(h, y, lh, ly, decoder, LABELS)  
             dev_dist += dist
 
@@ -135,25 +136,24 @@ def unit_eval(
 
 def main(args):
     # load configurations
-    allcfgs = cfgClass(yaml.safe_load(open(args.config_file, 'r')))
+    trncfgs = cfgClass(yaml.safe_load(open(args.config_file, 'r')))
 
     # fix random seeds
-    torch.manual_seed(allcfgs.SEED)
-    np.random.seed(allcfgs.SEED)
+    torch.manual_seed(trncfgs.SEED)
+    np.random.seed(trncfgs.SEED)
 
     # output experiment folder
     tgt_folder = time.strftime("%Y%m%d-%H%M%S")[2:]
     # init wandb proj if set to
-    if allcfgs.wandb.use:
-        wandb.init(**allcfgs.wandb.configs, config=allcfgs)
+    if trncfgs.wandb.use:
+        wandb.init(**trncfgs.wandb.configs, config=trncfgs)
         tgt_folder = wandb.run.name
     # setup output filepath
-    tgt_folder = f"{allcfgs.OUTPUT_DIR}/{tgt_folder}"
+    tgt_folder = f"{trncfgs.OUTPUT_DIR}/{tgt_folder}"
     if not os.path.exists(tgt_folder):
         os.makedirs(tgt_folder)
     # copy the configuration file there
     shutil.copy(args.config_file, f"{tgt_folder}/config.yml")
-
 
     # find the device
     device = (
@@ -166,9 +166,9 @@ def main(args):
     # phonemes, labels & mapping
     PHONEMES = CMUdict
     # whether to skip sequence tags in labels & phonemes
-    NUM_LABELS = len(PHONEMES) if allcfgs.keep_seq_tags else len(PHONEMES) - 2
+    NUM_LABELS = len(PHONEMES) if trncfgs.keep_seq_tags else len(PHONEMES) - 2
     # add to the configuration dict
-    allcfgs.model.configs['cls_cfgs']['num_labels'] = NUM_LABELS
+    trncfgs.model.configs['cls_cfgs']['num_labels'] = NUM_LABELS
 
     # truncate
     PHONEMES = PHONEMES[: NUM_LABELS]
@@ -179,27 +179,27 @@ def main(args):
         load data & build data loaders
     """
     trnDataset = datasetTrainDev(
-        stdDir=allcfgs.TRAIN_DATA_DIR,
+        stdDir=trncfgs.TRAIN_DATA_DIR,
         labelToIdx=PNM2IDX,
-        keepTags=allcfgs.keep_seq_tags
+        keepTags=trncfgs.keep_seq_tags
     )
     devDataset = datasetTrainDev(
-        stdDir=allcfgs.DEV_DATA_DIR,
+        stdDir=trncfgs.DEV_DATA_DIR,
         labelToIdx=PNM2IDX,
-        keepTags=allcfgs.keep_seq_tags
+        keepTags=trncfgs.keep_seq_tags
     )
     trnLoader = DataLoader(
         trnDataset,
-        batch_size=allcfgs.batch_size,
-        num_workers=allcfgs.num_workers,
+        batch_size=trncfgs.batch_size,
+        num_workers=trncfgs.num_workers,
         collate_fn=collateTrainDev,
         shuffle=True,
         pin_memory=True
     )
     devLoader = DataLoader(
         devDataset,
-        batch_size=allcfgs.batch_size,
-        num_workers=allcfgs.num_workers,
+        batch_size=trncfgs.batch_size,
+        num_workers=trncfgs.num_workers,
         collate_fn=collateTrainDev
     )
     print(f"\nA total of [{len(trnLoader)}] batches in training set, and [{len(devLoader)}] in dev set.\n")
@@ -207,9 +207,9 @@ def main(args):
     # model buildup
     model = {
         'one-for-all': OneForAll,
-        'knees-and-toes': KneesAndToes,
-        'shoulder-knees-and-toes': ShoulderKneesAndToes
-    }[allcfgs.model.choice](**allcfgs.model.configs)
+        'one-for-all-unlocked': OneForAllUnlocked,
+        'knees-and-toes': KneesAndToes
+    }[trncfgs.model.choice](**trncfgs.model.configs)
     model.to(device)
 
     # randomly take a batch for model summary
@@ -225,23 +225,25 @@ def main(args):
         'adamw': torch.optim.AdamW,
         'adam': torch.optim.Adam,
         'sgd': torch.optim.SGD
-    }[allcfgs.optimizer.name](model.parameters(), **allcfgs.optimizer.configs)
+    }[trncfgs.optimizer.name](model.parameters(), **trncfgs.optimizer.configs)
     
     batches_per_epoch = len(trnLoader)
     lr_list = cosine_linearwarmup_scheduler(
-        totalEpochs=allcfgs.epochs, batchesPerEpoch=batches_per_epoch,
-        init_lr=allcfgs.optimizer.configs['lr'], **allcfgs.scheduler_manual.configs
+        totalEpochs=trncfgs.epochs, batchesPerEpoch=batches_per_epoch,
+        init_lr=trncfgs.optimizer.configs['lr'], **trncfgs.scheduler_manual.configs
     )
     # save plot of lr scheduler in target folder
     plot_lr_schedule(lr_list, tgt_folder)
     # TODO: add official schedulers as well
 
-    scaler = torch.cuda.amp.GradScaler()
+    # mixed precision training
+    scaler = torch.cuda.amp.GradScaler() if trncfgs.use_mixed_precision else None
 
     # decoder for beam search
     decoder = CTCBeamDecoder(
         LABELS, log_probs_input=True,
-        **allcfgs.decoder_configs
+        num_processes=trncfgs.num_workers,
+        **trncfgs.decoder_configs
     )
 
     # keep track of best models
@@ -258,22 +260,22 @@ def main(args):
     dev_dists = list()
 
     # start training
-    for epoch in range(allcfgs.epochs):
-        print(f"\n\nRunning on Epoch [#{epoch + 1}/{allcfgs.epochs}] now...\n")
+    for epoch in range(trncfgs.epochs):
+        print(f"\n\nRunning on Epoch [#{epoch + 1}/{trncfgs.epochs}] now...\n")
         lr_slice = lr_list[epoch * batches_per_epoch: (epoch + 1) * batches_per_epoch]
 
         # train the model
         trn_loss = unit_train(
             model=model, trn_loader=trnLoader, criterion=criterion, 
             optimizer=optimizer, lr_list=lr_slice,
-            scaler=scaler, use_wandb=allcfgs.wandb.use, device=device
+            scaler=scaler, use_wandb=trncfgs.wandb.use, device=device
         )
         # evaluate the model
-        comp_dist = (epoch % allcfgs.comp_dist_int == 0) or (epoch == allcfgs.epochs - 1)
+        comp_dist = (epoch % trncfgs.comp_dist_int == 0) or (epoch == trncfgs.epochs - 1)
         dev_loss, dev_dist = unit_eval(
             model=model, dev_loader=devLoader, criterion=criterion,
             decoder=decoder, LABELS=LABELS, comp_dist=comp_dist,
-            scaler=scaler, use_wandb=allcfgs.wandb.use, device=device
+            scaler=scaler, use_wandb=trncfgs.wandb.use, device=device
         )
 
         if dev_loss < min_dev_loss:
@@ -285,7 +287,7 @@ def main(args):
                 'optimizer_state_dict': optimizer.state_dict(),
                 'lr': lr_list
             }, min_loss_ckpt_fp)
-            if allcfgs.wandb.use:
+            if trncfgs.wandb.use:
                 wandb.log({'min_loss_new_saving': epoch})
 
         # local loss tracking
@@ -303,7 +305,7 @@ def main(args):
                     'optimizer_state_dict': optimizer.state_dict(),
                     'lr': lr_list
                 }, min_dist_ckpt_fp)
-                if allcfgs.wandb.use:
+                if trncfgs.wandb.use:
                     wandb.log({'min_dist_new_saving': epoch})
 
     # saving the last checkpoint

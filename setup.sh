@@ -4,7 +4,7 @@ conda activate dl3p2
 # recommend running the 2 lines above seperately to avoid problems
 
 # packages
-pip install python-Levenshtein torchsummaryX torchaudio numpy clang matplotlib
+pip install python-Levenshtein torchsummaryX torchaudio numpy pandas clang matplotlib
 conda install pytorch torchvision torchtext -c pytorch
 
 # trivial but necessary for data downloads & exp monitoring

@@ -113,6 +113,7 @@ def main(args):
     # build a decoder class for common use
     tst_decoder = CTCBeamDecoder(
         LABELS, log_probs_input=True,
+        num_processes=tstcfgs.num_workers,
         **tstcfgs.test_decoder_configs
     )
 

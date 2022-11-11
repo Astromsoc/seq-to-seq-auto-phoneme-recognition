@@ -181,7 +181,7 @@ def generate_batch_predictions(h, lh, decoder, LABELS):
 
 
 def cosine_linearwarmup_scheduler(
-        totalEpochs: int=50, batchesPerEpoch: int=200, lr_decay: float=0.9999,
+        totalEpochs: int=50, batchesPerEpoch: int=200, # lr_decay: float=0.9999,
         init_lr: float=1e-3, min_lr: float=1e-5, warmupEpochs: int=5
     ):
     # total batches
@@ -195,8 +195,8 @@ def cosine_linearwarmup_scheduler(
     # cosine w/ shrinking amplitudes
     cosineBatches = totalBatches - warmupBatches
     lr_list[warmupBatches:] = np.array([
-        min_lr + 0.5 * (init_lr - min_lr) * (lr_decay ** b) * (
-            1 + math.cos(2 * math.pi * b / cosineBatches)
+        min_lr + 0.5 * (init_lr - min_lr) * (
+            1 + math.cos(math.pi * b / cosineBatches)
         ) for b in range(cosineBatches)
     ])
     return lr_list

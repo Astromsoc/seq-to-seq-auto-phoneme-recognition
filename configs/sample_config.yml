@@ -1,31 +1,53 @@
 # sample configuration file
 
 # constants: don't change after setup
-TRAIN_DATA_DIR: "data/train-clean-100" 
+TRAIN_DATA_DIR: "data/train-clean-360" 
 DEV_DATA_DIR: "data/dev-clean" 
-TEST_DATA_DIR: "data/test-clean/mfcc" 
+TEST_DATA_DIR: "data/test-clean/mfcc"  
 OUTPUT_DIR: "experiments"
 SEED: 11785
 
+
+# FOR TRAINING
+# whether to use wandb for logging
+wandb:
+  use: false
+  configs:
+    project: "dl3"
+    reinit: true
+    entity: ""
+
+# whether to save a plot of lr schedule in output folder
+save_lr_fig: true
+
 # whether to keep <SOS> and <EOS>
-keep_seq_tags: True
+keep_seq_tags: false
+
+# whether to use mixed precision
+use_mixed_precision: true
 
 # number of cpu workers
 num_workers: 10
+
+# regularizations imposed in training
+use_time_mask: true
+use_freq_mask: true
 
 # model architecture
 model: 
   choice: one-for-all
   configs:
+    emb_time_mask: true
+    emb_freq_mask: true
     feat_ext_cfgs:
       # input MFCC dimension
       dim_in: 15
       # output channels
       dims_out: 
-        - 256
+        - 512
       # kernel_sizes (first one for downsampling)
       kernels: 
-        - 5
+        - 7
         - 5
       # strides (also, first for downsampling)
       strides:
@@ -34,47 +56,33 @@ model:
       # whether to use layernorm in convnext block
       useLayerNorm: false
       # whether to use ConvNext blocks
-      useConvNext: true
+      useConvNext: false
 
     lstm_cfgs:
       # don't specify dim_in: taken from feat_ext's dims_out[-1]
       hidden_dims:
         - 256
-        # - 256
       num_layers:
-        - 4
-        # - 2
+        - 3
       bidirectionals:
         - true
-        # - true
       dropouts:
-        # - 0.2
-        - 0.1
+        - 0.2
+      useLockDropout: false
 
     cls_cfgs:
       # don't specify dim_in: taken automatically from 
       #     lstm's hidden_dims[-1] & bidirectionals[-1]
       dims:
-        - 256
-        - 256
+        - 1024
       # don't specify num_labels either: inferred from keep_seq_tags
 
 # batch sizes
-batch_size: 256
+batch_size: 16
 
 # number of training epochs
-epochs: 20
+epochs: 40
 comp_dist_int: 4
-
-
-# whether to use wandb for logging
-wandb:
-  use: false
-  configs:
-    project: "test"
-    reinit: true
-    entity: ""
-
 
 # beam search CTC decoder
 decoder_configs:
@@ -85,13 +93,25 @@ decoder_configs:
 # scheduler
 scheduler_manual:
   configs:
-    lr_decay: 0.9999
-    min_lr: 1.0e-5
+    # lr_decay: 0.9999
+    min_lr: 5.0e-5
     warmupEpochs: 1
   
 # optimizer
 optimizer:
   name: "adamw"
   configs:
-    lr: 0.005
+    lr: 0.004
 
+
+# FOR INFERENCE
+exp_folder: experiments/<exp-id-or-timestamp>
+
+test_decoder_configs:
+  beam_width: 20
+  # corresponds to [SIL]
+  blank_id: 0
+
+use_min_loss: true
+use_min_dist: true
+use_last: true
