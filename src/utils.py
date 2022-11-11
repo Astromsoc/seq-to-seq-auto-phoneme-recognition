@@ -225,7 +225,7 @@ if __name__ == '__main__':
     plot_lr_schedule(lr_list, './imgs')
     # you can use the plot to explore what decay rate to set for lr
 
-    from data.phonetics import *
+    from src.constants import *
     p2i = {p: i for i, p in enumerate(CMUdict)}
 
     trnDir = '../autodl-tmp/mini-train'

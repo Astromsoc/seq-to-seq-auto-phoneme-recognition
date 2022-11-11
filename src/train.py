@@ -10,7 +10,7 @@ import argparse
 
 from src.utils import *
 from src.models import *
-from data.phonetics import *
+from src.constants import *
 from ctcdecode import CTCBeamDecoder
 
 
@@ -67,9 +67,6 @@ def unit_train(
         # add to wandb log
         if use_wandb:
             wandb.log({'microavg-trn-loss': trn_loss_show})
-        
-        if b == 10:
-            break
     
     batch_bar.close()
     final_trn_loss = trn_loss / len(trn_loader)
@@ -97,8 +94,6 @@ def unit_eval(
     for b, batch in enumerate(dev_loader):
         x, y, lx, ly = batch
         x, y = x.to(device), y.to(device)
-        print(x.shape, lx.shape)
-        print(y.shape, ly.shape)
 
         with torch.inference_mode():
             if scaler and device.startswith('cuda'):
@@ -110,7 +105,6 @@ def unit_eval(
                 loss = criterion(h.permute((1, 0, 2)), y, lh, ly)
 
         if comp_dist:
-            print(h.shape, lh.shape)
             dist = compute_levenshtein(h, y, lh, ly, decoder, LABELS)  
             dev_dist += dist
 
@@ -231,7 +225,7 @@ def main(args):
     lr_list = cosine_linearwarmup_scheduler(
         totalEpochs=trncfgs.epochs, batchesPerEpoch=batches_per_epoch,
         init_lr=trncfgs.optimizer.configs['lr'], **trncfgs.scheduler_manual.configs
-    )
+    ) if trncfgs.scheduler_manual.use else None
     # save plot of lr scheduler in target folder
     plot_lr_schedule(lr_list, tgt_folder)
     # TODO: add official schedulers as well
@@ -262,7 +256,10 @@ def main(args):
     # start training
     for epoch in range(trncfgs.epochs):
         print(f"\n\nRunning on Epoch [#{epoch + 1}/{trncfgs.epochs}] now...\n")
-        lr_slice = lr_list[epoch * batches_per_epoch: (epoch + 1) * batches_per_epoch]
+        lr_slice = (
+            lr_list[epoch * batches_per_epoch: (epoch + 1) * batches_per_epoch] 
+            if lr_list is not None else None
+        )
 
         # train the model
         trn_loss = unit_train(
@@ -283,6 +280,7 @@ def main(args):
             # saving checkpoint
             torch.save({
                 'epoch': epoch,
+                'model_configs': trncfgs.model,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'lr': lr_list
@@ -301,6 +299,7 @@ def main(args):
                 # saving checkpoint
                 torch.save({
                     'epoch': epoch,
+                    'model_configs': trncfgs.model,
                     'model_state_dict': model.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                     'lr': lr_list
@@ -311,6 +310,7 @@ def main(args):
     # saving the last checkpoint
     torch.save({
         'epoch': epoch,
+        'model_configs': trncfgs.model,
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'lr': lr_list
@@ -323,6 +323,7 @@ def main(args):
             'epoch_dev_losses': dev_losses,
             'epoch_dev_dists': dev_dists,
             'lr_list': lr_list,
+            'model_configs': trncfgs.model,
             'min_dev_loss': min_dev_loss,
             'min_dev_dist': min_dev_dist
         }
