@@ -181,24 +181,34 @@ def generate_batch_predictions(h, lh, decoder, LABELS):
 
 
 def cosine_linearwarmup_scheduler(
-        totalEpochs: int=50, batchesPerEpoch: int=200, # lr_decay: float=0.9999,
-        init_lr: float=1e-3, min_lr: float=1e-5, warmupEpochs: int=5
+        total_epochs: int=50, batches_per_epoch: int=200, stages: int=3,
+        init_lr: float=1e-3, min_lr: float=1e-5, warmup_epochs: float=0.5
     ):
     # total batches
-    totalBatches = totalEpochs * batchesPerEpoch
-    lr_list = np.zeros((totalBatches, ))
+    total_batches = total_epochs * batches_per_epoch
+    lr_list = np.zeros((total_batches, ))
 
     # linear warmup
-    warmupBatches = batchesPerEpoch * warmupEpochs
-    lr_list[:warmupBatches] = np.linspace(0, init_lr, warmupBatches)
+    warmup_batches = int(batches_per_epoch * warmup_epochs)
+    lr_list[:warmup_batches] = np.linspace(0, init_lr, warmup_batches)
 
     # cosine w/ shrinking amplitudes
-    cosineBatches = totalBatches - warmupBatches
-    lr_list[warmupBatches:] = np.array([
-        min_lr + 0.5 * (init_lr - min_lr) * (
-            1 + math.cos(math.pi * b / cosineBatches)
-        ) for b in range(cosineBatches)
-    ])
+    cosine_batches = total_batches - warmup_batches
+    # divide into equal stages
+    steps_per_stage = cosine_batches // stages
+    lr_ranges = np.linspace(init_lr, min_lr, stages + 1)
+    for s in range(stages):
+        l = warmup_batches + s * steps_per_stage
+        r = l + steps_per_stage 
+        # fixing last stage to avoid trailing 0s
+        if s == stages - 1:
+            r = total_batches
+            steps_per_stage = cosine_batches - s * steps_per_stage
+        lr_list[l: r] = np.array([
+            lr_ranges[s + 1] + 0.5 * (lr_ranges[s] - lr_ranges[s + 1]) * (
+                1 + math.cos(math.pi * b / steps_per_stage)
+            ) for b in range(steps_per_stage)
+        ])
     return lr_list
 
 
@@ -221,7 +231,9 @@ def plot_lr_schedule(
 if __name__ == '__main__':
 
     import matplotlib.pyplot as plt
-    lr_list = cosine_linearwarmup_scheduler()
+    lr_list = cosine_linearwarmup_scheduler(
+        init_lr=0.004, min_lr=0.001, stages=3, warmup_epochs=1.5
+    )
     plot_lr_schedule(lr_list, './imgs')
     # you can use the plot to explore what decay rate to set for lr
 

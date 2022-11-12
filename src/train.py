@@ -115,6 +115,8 @@ def unit_eval(
             dev_loss=f"{dev_loss_show:.6f}", dev_dist=f"{dev_dist_show:.6f}"
         )
         batch_bar.update()
+        # delete variables to free some space
+        del x, y, h
 
     batch_bar.close()
     final_dev_loss = dev_loss / len(dev_loader)
@@ -221,14 +223,23 @@ def main(args):
         'sgd': torch.optim.SGD
     }[trncfgs.optimizer.name](model.parameters(), **trncfgs.optimizer.configs)
     
+    # manual cosine annealing w/ linear warmup
     batches_per_epoch = len(trnLoader)
     lr_list = cosine_linearwarmup_scheduler(
-        totalEpochs=trncfgs.epochs, batchesPerEpoch=batches_per_epoch,
+        total_epochs=trncfgs.epochs, batches_per_epoch=batches_per_epoch,
         init_lr=trncfgs.optimizer.configs['lr'], **trncfgs.scheduler_manual.configs
     ) if trncfgs.scheduler_manual.use else None
-    # save plot of lr scheduler in target folder
-    plot_lr_schedule(lr_list, tgt_folder)
-    # TODO: add official schedulers as well
+    if trncfgs.scheduler_manual.use:
+        # save plot of lr scheduler in target folder
+        plot_lr_schedule(lr_list, tgt_folder)
+    
+    # other pytorch schedulers
+    scheduler = {
+        'reduce-on-plateau': torch.optim.lr_scheduler.ReduceLROnPlateau,
+        'multistep': torch.optim.lr_scheduler.MultiStepLR
+    }[trncfgs.scheduler.choice](
+        optimizer, **trncfgs.scheduler.configs
+    ) if trncfgs.scheduler.use else None
 
     # mixed precision training
     scaler = torch.cuda.amp.GradScaler() if trncfgs.use_mixed_precision else None
@@ -256,6 +267,8 @@ def main(args):
     # start training
     for epoch in range(trncfgs.epochs):
         print(f"\n\nRunning on Epoch [#{epoch + 1}/{trncfgs.epochs}] now...\n")
+        
+        # manual schedule update
         lr_slice = (
             lr_list[epoch * batches_per_epoch: (epoch + 1) * batches_per_epoch] 
             if lr_list is not None else None
@@ -306,6 +319,17 @@ def main(args):
                 }, min_dist_ckpt_fp)
                 if trncfgs.wandb.use:
                     wandb.log({'min_dist_new_saving': epoch})
+
+        # step for pytorch scheduler
+        if scheduler:
+            if trncfgs.scheduler.choice == 'reduce-on-plateau':
+                if trncfgs.scheduler.use_dist_plateau:
+                    scheduler.step(dev_dist)
+                else:
+                    scheduler.step(dev_loss)
+            else:
+                scheduler.step()
+
 
     # saving the last checkpoint
     torch.save({

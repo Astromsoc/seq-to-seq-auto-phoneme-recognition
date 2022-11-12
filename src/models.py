@@ -181,7 +181,6 @@ class LockedLSTM(nn.Module):
         self.dropout = (
             LockedDropout(self.dropout_prob) if self.dropout_prob else None
         )
-        self.activation = nn.GELU()
 
 
     def forward(self, x, lx):
@@ -195,8 +194,6 @@ class LockedLSTM(nn.Module):
         xx, lx = pad_packed_sequence(
             xx, batch_first=True
         )
-        # apply activation
-        xx = self.activation(xx)
         # apply dropout
         if self.dropout is not None:
             xx = self.dropout(xx)
@@ -350,22 +347,22 @@ class AxisMaskingTransforms(nn.Module):
     """
     def __init__(
             self, 
-            emb_time_mask: bool=True,
-            emb_freq_mask: bool=True,
+            use_time_mask: bool=True,
+            use_freq_mask: bool=True,
             freq_range: int=-1
         ):
         super().__init__()
-        self.emb_freq_mask = emb_freq_mask
-        self.emb_time_mask = emb_time_mask
+        self.use_freq_mask = use_freq_mask
+        self.use_time_mask = use_time_mask
         self.transforms = nn.Sequential(*[t for t in [
             # frequency masking
             tat.FrequencyMasking(
                 freq_mask_param=freq_range
-            ) if emb_freq_mask and freq_range != -1 else None,
+            ) if use_freq_mask and freq_range != -1 else None,
             # time masking
             tat.TimeMasking(
                 time_mask_param=10, p=0.8
-            ) if emb_time_mask else None
+            ) if use_time_mask else None
         ] if t is not None])
     
     
@@ -388,6 +385,8 @@ class OneForAll(nn.Module):
             feat_ext_cfgs: dict,
             lstm_cfgs: dict,
             cls_cfgs: dict,
+            init_time_mask: bool=True,
+            init_freq_mask: bool=True,
             emb_time_mask: bool=True,
             emb_freq_mask: bool=True
         ):
@@ -398,6 +397,8 @@ class OneForAll(nn.Module):
             'lstm': lstm_cfgs,
             'cls': cls_cfgs
         }
+        self.init_freq_mask = init_freq_mask
+        self.init_time_mask = init_time_mask
         self.emb_freq_mask = emb_freq_mask
         self.emb_time_mask = emb_time_mask
 
@@ -425,18 +426,27 @@ class OneForAll(nn.Module):
         cls_dim_in *= 2 if lstm_cfgs['bidirectionals'][-1] else 1
         self.cls = ClsHead(dim_in=cls_dim_in, **cls_cfgs)
 
-        self.transforms = AxisMaskingTransforms(
-            emb_freq_mask=self.emb_freq_mask,
-            emb_time_mask=self.emb_time_mask,
+        # transforms for initial input featues
+        self.init_transforms = AxisMaskingTransforms(
+            use_freq_mask=self.init_freq_mask,
+            use_time_mask=self.init_time_mask,
+            freq_range=1            # don't have much to be masked out
+        )
+        # transforms for extracted features embeddings 
+        self.emb_transforms = AxisMaskingTransforms(
+            use_freq_mask=self.emb_freq_mask,
+            use_time_mask=self.emb_time_mask,
             freq_range=int(feat_ext_cfgs['dims_out'][-1] * 0.1)
         )
 
 
     def forward(self, x, lx):
+        # initial transforms
+        xx = self.init_transforms(x)
         # feature extraction layers
-        xx, lx = self.feat_ext(x, lx)
+        xx, lx = self.feat_ext(xx, lx)
         # apply transforms here 
-        xx = self.transforms(xx)
+        xx = self.emb_transforms(xx)
         # (bi)lstm layers
         for lstm in self.lstm_stack:
             xx, lx = lstm(xx, lx)

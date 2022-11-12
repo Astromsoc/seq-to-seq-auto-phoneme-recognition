@@ -3,7 +3,7 @@
 # constants: don't change after setup
 TRAIN_DATA_DIR: "<dir-prefix>/train-clean-360" 
 DEV_DATA_DIR: "<dir-prefix>/dev-clean" 
-TEST_DATA_DIR: "<dir-prefix>/test-clean/mfcc" 
+TEST_DATA_DIR: "<dir-prefix>/test-clean/mfcc"
 OUTPUT_DIR: "experiments"
 SEED: 11785
 
@@ -29,19 +29,17 @@ use_mixed_precision: true
 # number of cpu workers
 num_workers: 10
 
-# regularizations imposed in training
-use_time_mask: true
-use_freq_mask: true
-
 # whether to finetune a checkpoint
 finetune:
   use: false
-  checkpoint: "experiments/<checkpoint-filepath>"
+  checkpoint: "experiments/<checkpoint>"
 
 # model architecture
 model: 
   choice: one-for-all
   configs:
+    init_time_mask: true
+    init_freq_mask: true
     emb_time_mask: true
     emb_freq_mask: true
     feat_ext_cfgs:
@@ -87,25 +85,48 @@ batch_size: 256
 
 # number of training epochs
 epochs: 40
-comp_dist_int: 4
+comp_dist_int: 1
 
 # beam search CTC decoder
 decoder_configs:
-  beam_width: 5
+  beam_width: 10
   # corresponds to [SIL]
   blank_id: 0
 
-# scheduler
+# scheduler: cosine annealing w/ warmups only
 scheduler_manual:
   use: true
   configs:
-    # lr_decay: 0.9999
-    min_lr: 1.0e-4
-    warmupEpochs: 1
+    min_lr: 0.001
+    stages: 3
+    warmup_epochs: 0
+  
+
+# pytorch scheduler
+scheduler:
+  use: false
+  # # sample configs for MultiStepLR
+  # choice: multi-step
+  # configs:
+  #   milestones:
+  #     - 8
+  #     - 12
+  #     - 16
+  #   gamma: 0.5
+  # sample configs for ReduceLROnPlateau
+  choice: reduce-on-plateau
+  configs:
+    mode: min
+    factor: 0.5
+    patience: 4
+    threshold: 0.5
+    threshold_mode: abs
+  # for reduce-on-plateau only: track dist or loss
+  use_dist_plateau: true
   
 # optimizer
 optimizer:
-  name: "adamw"
+  name: adamw
   configs:
     lr: 0.004
 
@@ -114,10 +135,10 @@ optimizer:
 exp_folder: experiments/<subfolder>
 
 test_decoder_configs:
-  beam_width: 20
+  beam_width: 50
   # corresponds to [SIL]
   blank_id: 0
 
 use_min_loss: true
-use_min_dist: true
-use_last: true
+use_min_dist: false
+use_last: false

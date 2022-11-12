@@ -22,8 +22,7 @@ def infer_one_checkpoint(
     # reconstruct the model
     model = {
         'one-for-all': OneForAll,
-        'knees-and-toes': KneesAndToes,
-        'shoulder-knees-and-toes': ShoulderKneesAndToes
+        'knees-and-toes': KneesAndToes
     }[trncfgs.model.choice](**trncfgs.model.configs)
 
     # load from checkpoint
