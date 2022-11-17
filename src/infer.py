@@ -26,7 +26,7 @@ def infer_one_checkpoint(
     }[trncfgs.model.choice](**trncfgs.model.configs)
 
     # load from checkpoint
-    ckpt = torch.load(checkpoint_filepath)
+    ckpt = torch.load(checkpoint_filepath, map_location=torch.device(device))
     model.load_state_dict(ckpt['model_state_dict'])
     model.to(device)
     model.eval()
@@ -106,8 +106,7 @@ def main(args):
     test_template_filepath = trncfgs.TEST_DATA_DIR.replace('mfcc', 'transcript/random_submission.csv')
 
     # build scaler
-    if device.startswith("cuda"):
-        scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.cuda.amp.GradScaler() if device.startswith("cuda") else None
 
     # build a decoder class for common use
     tst_decoder = CTCBeamDecoder(

@@ -132,7 +132,8 @@ class FeatureExtraction(nn.Module):
         xx = xx.permute((0, 2, 1))
         # compute new lengths
         lx = torch.clamp(
-            torch.div(lx, self.len_discount, rounding_mode='floor'),
+            # +1: manual implementation of 'ceil'
+            torch.div(lx, self.len_discount, rounding_mode='floor') + 1,
             max=xx.shape[1]
         )
         return xx, lx
@@ -171,7 +172,7 @@ class LockedLSTM(nn.Module):
     """
         One single LSTM layer w/ locked dropout
     """
-    def __init__(self, lstm_cfgs: dict, dropout_prob: float=0.2):
+    def __init__(self, lstm_cfgs: dict, dropout_prob: float=0.2, use_residual: bool=False):
         super().__init__()
         # bookkeeping
         self.lstm_cfgs = lstm_cfgs
@@ -181,9 +182,18 @@ class LockedLSTM(nn.Module):
         self.dropout = (
             LockedDropout(self.dropout_prob) if self.dropout_prob else None
         )
+        self.use_residual = use_residual
+        self.res_weight = nn.parameter.Parameter(
+            torch.zeros((self.vanilla.input_size, 
+            self.vanilla.hidden_size * (1 + int(self.vanilla.bidirectional))
+            )), requires_grad=True
+        )
 
 
     def forward(self, x, lx):
+        # keep a copy of original input
+        if self.use_residual:
+            identity = x
         # pack 
         xx = pack_padded_sequence(
             x, lengths=lx, batch_first=True, enforce_sorted=False
@@ -194,6 +204,9 @@ class LockedLSTM(nn.Module):
         xx, lx = pad_packed_sequence(
             xx, batch_first=True
         )
+        # add residual connection
+        if self.use_residual:
+            xx += identity @ self.res_weight
         # apply dropout
         if self.dropout is not None:
             xx = self.dropout(xx)
@@ -207,12 +220,13 @@ class LockedStackedLSTM(nn.Module):
             to be compatible w/ AccrualNet inputs for smoother transition
     """
     def __init__(
-            self, input_dim: int=512, hidden_dim: int=512, 
+            self, input_dim: int=512, hidden_dim: int=512, use_residual: bool=False,
             bidirectional: bool=True, dropout:float=0.2, num_layers=3
         ):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
+        self.use_residual = use_residual
         self.bidirectional = bidirectional
         self.dropout = dropout
         self.num_layers = num_layers
@@ -225,7 +239,7 @@ class LockedStackedLSTM(nn.Module):
                 'hidden_size': hidden_dim,
                 'bidirectional': bidirectional,
                 'batch_first': True
-            }, dropout_prob=self.dropout) 
+            }, dropout_prob=self.dropout, use_residual=use_residual) 
             for i in range(num_layers)
         ])
 
@@ -249,7 +263,7 @@ class AccrualNet(nn.Module):
             num_layers: list=[4, 4],
             bidirectionals: list=[True, True],
             dropouts: list=[0.3, 0.3],
-            useLockDropout: bool=True
+            use_lock_dropout: bool=True
         ):
         """
             Note: locked dropout only applied once to concat layers at the end
@@ -259,7 +273,7 @@ class AccrualNet(nn.Module):
         self.dims = [dim_in] + hidden_dims
         self.num_layers = num_layers
         self.bidirectionals = bidirectionals
-        self.useLockDropout = useLockDropout
+        self.use_lock_dropout = use_lock_dropout
         assert (
             len(self.dims) 
             == len(self.num_layers) + 1 
@@ -278,13 +292,13 @@ class AccrualNet(nn.Module):
                 hidden_size=self.dims[l + 1],
                 num_layers=self.num_layers[l],
                 bidirectional=bidirectional,
-                dropout=0 if self.useLockDropout else dropouts[l],
+                dropout=0 if self.use_lock_dropout else dropouts[l],
                 batch_first=True
             )
             self.streamline.append(lstm)
 
         # locked dropout
-        self.dropout = LockedDropout(dropouts[l]) if useLockDropout else None
+        self.dropout = LockedDropout(dropouts[l]) if use_lock_dropout else None
     
 
     def forward(self, x, lx):
@@ -416,7 +430,9 @@ class OneForAll(nn.Module):
             hidden_dim=lstm_cfgs['dims'][i + 1], 
             bidirectional=lstm_cfgs['bidirectionals'][i], 
             dropout=lstm_cfgs['dropouts'][i], 
-            num_layers=lstm_cfgs['num_layers'][i]
+            num_layers=lstm_cfgs['num_layers'][i],
+            use_residual=(lstm_cfgs['use_residuals'][i] 
+                          if 'use_residuals' in lstm_cfgs else False)
         ) for i, hidden_dim in enumerate(lstm_cfgs['dims'][:-1])])
 
         # classification head
@@ -562,12 +578,12 @@ if __name__ == '__main__':
     LINEAR_DIMS = [64]
     NUM_PHONEMES = 41
 
-    LX = torch.tensor([
+    LX0 = torch.tensor([
         torch.randint(MINLEN, MAXLEN, size=()) 
         for _ in range(B)
     ])
     X = [
-        torch.rand(size=(LX[i], MFCC_DIM))
+        torch.rand(size=(LX0[i], MFCC_DIM))
         for i in range(B)
     ]
     # pad
@@ -582,9 +598,9 @@ if __name__ == '__main__':
         kernels=KERNELS,
         useLayerNorm=False
     )
-    print(f"\nModel summary for [Feature Extraction]: \n{summary(FeatExt, X, LX)}\n\n")
+    print(f"\nModel summary for [Feature Extraction]: \n{summary(FeatExt, X, LX0)}\n\n")
 
-    XX, LX = FeatExt(X, LX)
+    XX, LX = FeatExt(X, LX0)
     print('Post-Feature-Extraction: ', XX.shape)
 
     BiLSTM = AccrualNet(
@@ -618,7 +634,7 @@ if __name__ == '__main__':
     DIMS_OUT = [16, 32, 32]
     KERNELS = [5, 5, 5, 3]
     STRIDES = [2, 2, 1, 1]
-    HIDDEN_DIMS = [32, 32]
+    HIDDEN_DIMS = [128, 32]
     NUM_LAYERS = [2, 2]
     BIDIRECTIONALS = [True, True]
     LINEAR_DIMS = [64]
@@ -637,7 +653,8 @@ if __name__ == '__main__':
         'hidden_dims': HIDDEN_DIMS,
         'num_layers': NUM_LAYERS,
         'bidirectionals': BIDIRECTIONALS,
-        'dropouts': DROPOUTS
+        'dropouts': DROPOUTS,
+        'use_residuals': [True, True]
     }
 
     CLS_CFGS = {
@@ -651,4 +668,4 @@ if __name__ == '__main__':
         cls_cfgs=CLS_CFGS
     )
 
-    print(f"\n\nModel Summary for [OneForAll]:\n{summary(model, X, LX)}\n\n")
+    print(f"\n\nModel Summary for [OneForAll]:\n{summary(model, X, LX0)}\n\n")

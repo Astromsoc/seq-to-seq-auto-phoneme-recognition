@@ -16,8 +16,9 @@ from ctcdecode import CTCBeamDecoder
 
 
 def unit_train(
-        model, trn_loader, criterion, optimizer, scaler=None, lr_list: list=None,
-        transforms=None, use_wandb: bool=False, device: str='cuda'
+        model, trn_loader, criterion, optimizer,  epoch: int,
+        scaler=None, lr_list: list=None, noise_level:float=0, 
+        use_wandb: bool=False, device: str='cuda'
     ):
 
     batch_bar = tqdm(
@@ -38,11 +39,11 @@ def unit_train(
             wandb.log({'learning-rate': optimizer.param_groups[0]['lr']})
 
         x, y, lx, ly = batch
-        # augmentations
-        if transforms:
-            x, lx = transforms(x, lx)
 
         x, y = x.to(device), y.to(device)
+        # add random noise to input
+        if noise_level != 0:
+            x += torch.randn(x.size(), device=x.device) * noise_level
 
         if scaler and device.startswith('cuda'):
             with torch.cuda.amp.autocast():
@@ -71,13 +72,13 @@ def unit_train(
     batch_bar.close()
     final_trn_loss = trn_loss / len(trn_loader)
     if use_wandb:
-        wandb.log({'epoch-trn-loss-running-avg': final_trn_loss})
+        wandb.log({'epoch-trn-loss-running-avg': final_trn_loss, 'epoch': epoch + 1})
     return final_trn_loss
 
 
 
 def unit_eval(
-        model, dev_loader, criterion, decoder, LABELS, 
+        model, dev_loader, criterion, decoder, LABELS, epoch: int,
         scaler=None, use_wandb: bool=False, device: str='cuda', comp_dist: bool=True
     ):
     """
@@ -123,9 +124,9 @@ def unit_eval(
     final_dev_dist = dev_dist / len(dev_loader) if comp_dist else -1
     # add to wandb log
     if use_wandb:
-        wandb.log({'epoch-dev-loss': final_dev_loss})
+        wandb.log({'epoch-dev-loss': final_dev_loss, 'epoch': epoch + 1})
         if comp_dist:
-            wandb.log({'epoch-dev-dist': final_dev_dist})
+            wandb.log({'epoch-dev-dist': final_dev_dist, 'epoch': epoch + 1})
     return final_dev_loss, final_dev_dist
 
 
@@ -133,6 +134,11 @@ def unit_eval(
 def main(args):
     # load configurations
     trncfgs = cfgClass(yaml.safe_load(open(args.config_file, 'r')))
+
+    # use previous configurations if funetuning
+    if trncfgs.finetune.use:
+        ckpt = torch.load(trncfgs.finetune.checkpoint)
+        trncfgs.model = ckpt['model_configs']
 
     # fix random seeds
     torch.manual_seed(trncfgs.SEED)
@@ -161,10 +167,13 @@ def main(args):
 
     # phonemes, labels & mapping
     PHONEMES = CMUdict
-    # whether to skip sequence tags in labels & phonemes
-    NUM_LABELS = len(PHONEMES) if trncfgs.keep_seq_tags else len(PHONEMES) - 2
-    # add to the configuration dict
-    trncfgs.model.configs['cls_cfgs']['num_labels'] = NUM_LABELS
+    if not trncfgs.finetune.use:
+        # whether to skip sequence tags in labels & phonemes
+        NUM_LABELS = len(PHONEMES) if trncfgs.keep_seq_tags else len(PHONEMES) - 2
+        trncfgs.model.configs['cls_cfgs']['num_labels'] = NUM_LABELS
+    else:
+        # load previous settings by inferring from old configs
+        NUM_LABELS = trncfgs.model.configs['cls_cfgs']['num_labels']
 
     # truncate
     PHONEMES = PHONEMES[: NUM_LABELS]
@@ -251,6 +260,14 @@ def main(args):
         **trncfgs.decoder_configs
     )
 
+    # load checkpoints if finetuning
+    if trncfgs.finetune.use:
+        # for model
+        model.load_state_dict(ckpt['model_state_dict'])
+        model.to(device)
+        # for optimizer
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+
     # keep track of best models
     min_dev_loss = float('inf')
     min_dev_dist = float('inf')
@@ -276,15 +293,15 @@ def main(args):
 
         # train the model
         trn_loss = unit_train(
-            model=model, trn_loader=trnLoader, criterion=criterion, 
-            optimizer=optimizer, lr_list=lr_slice,
+            model=model, trn_loader=trnLoader, criterion=criterion, epoch=epoch,
+            optimizer=optimizer, lr_list=lr_slice, noise_level=trncfgs.noise_level,
             scaler=scaler, use_wandb=trncfgs.wandb.use, device=device
         )
         # evaluate the model
         comp_dist = (epoch % trncfgs.comp_dist_int == 0) or (epoch == trncfgs.epochs - 1)
         dev_loss, dev_dist = unit_eval(
             model=model, dev_loader=devLoader, criterion=criterion,
-            decoder=decoder, LABELS=LABELS, comp_dist=comp_dist,
+            decoder=decoder, LABELS=LABELS, comp_dist=comp_dist, epoch=epoch,
             scaler=scaler, use_wandb=trncfgs.wandb.use, device=device
         )
 
@@ -298,8 +315,6 @@ def main(args):
                 'optimizer_state_dict': optimizer.state_dict(),
                 'lr': lr_list
             }, min_loss_ckpt_fp)
-            if trncfgs.wandb.use:
-                wandb.log({'min_loss_new_saving': epoch})
 
         # local loss tracking
         trn_losses.append(trn_loss)
