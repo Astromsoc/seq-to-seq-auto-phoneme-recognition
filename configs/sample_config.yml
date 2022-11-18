@@ -1,17 +1,18 @@
 # sample configuration file
 
-# constants: don't change after setup
-TRAIN_DATA_DIR: "<dir-prefix>/train-clean-360" 
-DEV_DATA_DIR: "<dir-prefix>/dev-clean" 
-TEST_DATA_DIR: "<dir-prefix>/test-clean/mfcc"
+# # constants: don't change after setup
+TRAIN_DATA_DIR: "<prefix>/train-clean-360" 
+DEV_DATA_DIR: "<prefix>/dev-clean" 
+TEST_DATA_DIR: "<prefix>/test-clean/mfcc"
 OUTPUT_DIR: "experiments"
 SEED: 11785
+# sample configuration file
 
 
 # FOR TRAINING
 # whether to use wandb for logging
 wandb:
-  use: true
+  use: false
   configs:
     project: "dl3"
     reinit: true
@@ -29,10 +30,13 @@ use_mixed_precision: true
 # number of cpu workers
 num_workers: 10
 
+# noise added to input data
+noise_level: 0.5
+
 # whether to finetune a checkpoint
 finetune:
   use: false
-  checkpoint: "experiments/<checkpoint>"
+  checkpoint: "experiments/<run-id>/<last/min_dist/min_loss>.pt"
 
 # model architecture
 model: 
@@ -47,7 +51,7 @@ model:
       dim_in: 15
       # output channels
       dims_out: 
-        - 256
+        - 2048
       # kernel_sizes (first one for downsampling)
       kernels: 
         - 7
@@ -64,47 +68,49 @@ model:
     lstm_cfgs:
       # don't specify dim_in: taken from feat_ext's dims_out[-1]
       hidden_dims:
-        - 256
+        - 1024
       num_layers:
-        - 3
+        - 2
       bidirectionals:
         - true
       dropouts:
-        - 0.2
-      useLockDropout: false
+        - 0.25
+      use_lock_dropout: true
+      use_residuals:
+        - false
 
     cls_cfgs:
       # don't specify dim_in: taken automatically from 
       #     lstm's hidden_dims[-1] & bidirectionals[-1]
       dims:
-        - 1024
+        - 4096
       # don't specify num_labels either: inferred from keep_seq_tags
 
 # batch sizes
-batch_size: 256
+batch_size: 64
 
 # number of training epochs
-epochs: 40
+epochs: 20
 comp_dist_int: 1
 
 # beam search CTC decoder
 decoder_configs:
-  beam_width: 10
+  beam_width: 20
   # corresponds to [SIL]
   blank_id: 0
 
 # scheduler: cosine annealing w/ warmups only
 scheduler_manual:
-  use: true
+  use: false
   configs:
-    min_lr: 0.001
-    stages: 3
-    warmup_epochs: 0
+    min_lr: 0.0005
+    stages: 2
+    warmup_epochs: 0.2
   
 
 # pytorch scheduler
 scheduler:
-  use: false
+  use: true
   # # sample configs for MultiStepLR
   # choice: multi-step
   # configs:
@@ -118,8 +124,8 @@ scheduler:
   configs:
     mode: min
     factor: 0.5
-    patience: 4
-    threshold: 0.5
+    patience: 3
+    threshold: 0.1
     threshold_mode: abs
   # for reduce-on-plateau only: track dist or loss
   use_dist_plateau: true
@@ -128,11 +134,12 @@ scheduler:
 optimizer:
   name: adamw
   configs:
-    lr: 0.004
+    lr: 0.001
+    weight_decay: 0.10
 
 
 # FOR INFERENCE
-exp_folder: experiments/<subfolder>
+exp_folder: experiments/<run-id>
 
 test_decoder_configs:
   beam_width: 50
@@ -140,5 +147,5 @@ test_decoder_configs:
   blank_id: 0
 
 use_min_loss: true
-use_min_dist: false
-use_last: false
+use_min_dist: true
+use_last: true

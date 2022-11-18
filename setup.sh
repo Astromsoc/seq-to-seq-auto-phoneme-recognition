@@ -4,11 +4,12 @@ conda activate dl3p2
 # recommend running the 2 lines above seperately to avoid problems
 
 # packages
-pip install python-Levenshtein torchsummaryX torchaudio numpy pandas clang matplotlib
-conda install pytorch torchvision torchtext -c pytorch
+pip install python-Levenshtein torchsummaryX torchaudio numpy pandas clang matplotlib kaggle wandb pyyaml wget
+conda install pytorch torchvision torchtext cudatoolkit -c pytorch
+# to ensure that ctcencode could be correctly installed
+# make sure to install the following c/c++ libraries
+conda install gcc_linux-64 gxx_linux-64
 
-# trivial but necessary for data downloads & exp monitoring
-pip install kaggle wandb pyyaml wget
 
 # vital: ctc-decoder
 git clone --recursive https://github.com/parlance/ctcdecode.git
