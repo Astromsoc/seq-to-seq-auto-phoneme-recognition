@@ -267,6 +267,10 @@ def main(args):
         model.to(device)
         # for optimizer
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        # reload learning rate
+        if trncfgs.finetune.relaunch_lr:
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = trncfgs.optimizer.configs['lr']
 
     # keep track of best models
     min_dev_loss = float('inf')
