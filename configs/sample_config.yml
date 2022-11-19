@@ -6,12 +6,13 @@ DEV_DATA_DIR: "<data-folder-prefix>/dev-clean"
 TEST_DATA_DIR: "<data-folder-prefix>/test-clean/mfcc" 
 OUTPUT_DIR: "experiments"
 SEED: 11785
+# sample configuration file
 
 
 # FOR TRAINING
 # whether to use wandb for logging
 wandb:
-  use: true
+  use: false
   configs:
     project: dl3
     reinit: true
@@ -30,7 +31,7 @@ use_mixed_precision: true
 num_workers: 10
 
 # noise added to input data
-noise_level: 0.7
+noise_level: 0.5
 
 # whether to finetune a checkpoint
 finetune:
@@ -135,6 +136,8 @@ optimizer:
   name: adamw
   configs:
     lr: 0.0005
+    weight_decay: 0.10
+    lr: 0.001
     weight_decay: 0.10
 
 
