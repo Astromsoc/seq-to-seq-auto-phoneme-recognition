@@ -4,7 +4,7 @@ For the project: Sequence-to-Sequence Frame-Level Phoneme Recognition, as part o
 
 **Author**: Siyu Chen (schen4)
 
-**Wandb Project**: [Click Here](https://wandb.ai/astromsoc/785-hw2/overview)
+**Wandb Project**: [Click Here](https://wandb.ai/astromsoc/785-hw3/overview)
 
 **Github Repo**: [Click Here](https://github.com/Astromsoc/seq-to-seq-auto-phoneme-recognition) (will be made public after the end of this semester, as is required) 
 
